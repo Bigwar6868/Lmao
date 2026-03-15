@@ -1,0 +1,8 @@
+Checking MCP server health...
+
+server-memory: npx -y @modelcontextprotocol/server-memory - ✓ Connected
+server-github: npx -y @modelcontextprotocol/server-github - ✓ Connected
+server-fetch: python -m mcp_server_fetch - ✓ Connected
+server-sequential-thinking: npx -y @modelcontextprotocol/server-sequential-thinking - ✓ Connected
+server-exa: npx -y exa-mcp-server - ✓ Connected
+server-shadcn: npx -y shadcn-ui-mcp-server - ✓ Connected

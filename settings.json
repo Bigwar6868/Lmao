@@ -1,0 +1,25 @@
+{
+  "autoUpdatesChannel": "latest",
+  "extraKnownMarketplaces": {
+    "claude-plugins-official": {
+      "source": {
+        "source": "github",
+        "repo": "anthropics/claude-plugins-official"
+      }
+    }
+  },
+  "permissions": {
+    "allow": [
+      "Bash(git *)", "Bash(gh *)", "Bash(npm *)", "Bash(npx *)",
+      "Bash(node *)", "Bash(cat *)", "Bash(ls *)", "Bash(find *)",
+      "Bash(grep *)", "Bash(rg *)", "Bash(mkdir *)", "Bash(cp *)",
+      "Bash(mv *)", "Bash(rm *)", "Bash(echo *)", "Bash(python *)",
+      "Bash(pip *)", "Bash(curl *)", "Bash(jq *)", "Bash(tree *)"
+    ],
+    "deny": []
+  },
+  "env": {
+    "MCP_TIMEOUT": "15000",
+    "MAX_MCP_OUTPUT_TOKENS": "25000"
+  }
+}
