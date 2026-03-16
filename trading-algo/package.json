@@ -1,0 +1,46 @@
+{
+  "name": "trading-algo",
+  "version": "1.0.0",
+  "description": "Self-evolving multi-asset trading algorithm system",
+  "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc",
+    "backtest": "tsx src/scripts/backtest.ts",
+    "paper-trade": "tsx src/scripts/paper-trade.ts",
+    "analyze": "tsx src/scripts/analyze.ts",
+    "evolve": "tsx src/scripts/evolve.ts",
+    "diagnose": "tsx src/scripts/diagnose.ts",
+    "scan": "tsx src/scripts/scan.ts",
+    "seed-data": "tsx src/scripts/seed-data.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "bundle": "node scripts/bundle.mjs",
+    "release:build": "node scripts/bundle.mjs && node scripts/package-release.mjs"
+  },
+  "pkg": {
+    "assets": [
+      "data/**/*"
+    ],
+    "outputPath": "release"
+  },
+  "dependencies": {
+    "axios": "^1.7.0",
+    "ccxt": "^4.4.0",
+    "dotenv": "^16.4.0",
+    "node-cron": "^3.0.3",
+    "pino": "^9.6.0",
+    "trading-signals": "^7.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/node-cron": "^3.0.11",
+    "esbuild": "^0.24.2",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}
