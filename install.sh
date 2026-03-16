@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # ============================================================
 # Trading Algorithm System — One-Line Installer
-# Usage: curl -fsSL <raw-url>/install.sh | bash
+# Usage: curl -fsSL https://github.com/Bigwar6868/Lmao/releases/latest/download/install.sh | bash
 # ============================================================
 
 set -euo pipefail
 
 REPO="Bigwar6868/Lmao"
-BRANCH="claude/trading-algorithm-repo-pmnQ1"
+BRANCH="main"
 DIR="Lmao"
 MIN_NODE=20
 

@@ -1,12 +1,12 @@
 # ============================================================
 # Trading Algorithm System — Windows Installer (PowerShell)
-# Usage: irm https://raw.githubusercontent.com/Bigwar6868/Lmao/claude/trading-algorithm-repo-pmnQ1/install.ps1 | iex
+# Usage: irm https://github.com/Bigwar6868/Lmao/releases/latest/download/install.ps1 | iex
 # ============================================================
 
 $ErrorActionPreference = "Stop"
 
 $REPO = "Bigwar6868/Lmao"
-$BRANCH = "claude/trading-algorithm-repo-pmnQ1"
+$BRANCH = "main"
 $DIR = "Lmao"
 $MIN_NODE = 20
 

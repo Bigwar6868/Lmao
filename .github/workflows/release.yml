@@ -1,0 +1,74 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+      - 'DEMO'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag name for the release'
+        required: true
+        default: 'DEMO'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set tag name
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create or update release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: "${{ steps.tag.outputs.tag }} — Multi-Agent Trading System"
+          body: |
+            ## One-Click Install
+
+            **Mac / Linux:**
+            ```bash
+            curl -fsSL https://github.com/Bigwar6868/Lmao/releases/download/${{ steps.tag.outputs.tag }}/install.sh | bash
+            ```
+
+            **Windows PowerShell:**
+            ```powershell
+            irm https://github.com/Bigwar6868/Lmao/releases/download/${{ steps.tag.outputs.tag }}/install.ps1 | iex
+            ```
+
+            ---
+
+            ### What's Included
+            - **109 assets** — 35 crypto, 54 stocks, 20 forex
+            - **8 autonomous agents** that debate trades before execution
+            - **Genetic algorithm** self-evolution (strategy DNA mutation)
+            - **Walk-forward overfitting guard** + XAI audit trail
+            - **Kill switch**, circuit breakers, governance guardrails
+            - **Paper trading** mode — no real money needed
+
+            ### Manual Install
+            1. Download `install.sh` (Mac/Linux) or `install.ps1` (Windows) from **Assets** below
+            2. Open a terminal in the download folder
+            3. Run: `bash install.sh` or right-click `install.ps1` → Run with PowerShell
+
+            ### Requirements
+            - Node.js 20+
+            - Git
+          files: |
+            install.sh
+            install.ps1
+          prerelease: false
+          make_latest: true
