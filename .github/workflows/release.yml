@@ -33,7 +33,7 @@ jobs:
             pkg_target: node20-linux-arm64
             asset_name: trading-algo-linux-arm64
             archive: tar.gz
-          - os: macos-13
+          - os: macos-latest
             pkg_target: node20-macos-x64
             asset_name: trading-algo-macos-amd64
             archive: tar.gz
@@ -92,6 +92,7 @@ jobs:
   # ── Collect all builds and create release ─────────────────
   release:
     needs: build
+    if: always() && !cancelled()
     runs-on: ubuntu-latest
 
     steps:
