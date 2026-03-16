@@ -2,7 +2,6 @@ import type { Strategy, BacktestResult, Candle, AssetInfo, Timeframe, StrategyDN
 import { PerformanceTracker } from './tracker.js';
 import { StrategyEvolver } from './evolver.js';
 import { StrategyRanker } from './ranker.js';
-import { TradingJournal } from './journal.js';
 import { BacktestEngine } from '../backtester/engine.js';
 import { createModuleLogger } from '../../shared/logger.js';
 import { eventBus } from '../../shared/events.js';
@@ -19,14 +18,12 @@ export class SelfImprover {
   private tracker = new PerformanceTracker();
   private evolver = new StrategyEvolver();
   private ranker = new StrategyRanker();
-  private journal = new TradingJournal();
   private backtestEngine = new BacktestEngine();
   private populations = new Map<string, StrategyDNA[]>();
 
   async initialize(): Promise<void> {
     await this.tracker.load();
     await this.ranker.load();
-    await this.journal.load();
     log.info('Self-improver initialized');
   }
 
@@ -36,7 +33,6 @@ export class SelfImprover {
   async recordResult(result: BacktestResult): Promise<void> {
     this.tracker.record(result);
     this.ranker.update(result);
-    await this.journal.recordBacktest(result);
   }
 
   /**
@@ -103,10 +99,6 @@ export class SelfImprover {
       ? (newBest.fitness - previousBest.fitness) / previousBest.fitness
       : 0;
 
-    await this.journal.recordEvolution(
-      name, newBest.generation, newBest.fitness, improvement, newBest
-    );
-
     if (improved) {
       await eventBus.emit('evolution:improvement', {
         strategy: name,
@@ -144,7 +136,6 @@ export class SelfImprover {
   async save(): Promise<void> {
     await this.tracker.save();
     await this.ranker.save();
-    await this.journal.save();
     log.info('Self-improver state saved');
   }
 }

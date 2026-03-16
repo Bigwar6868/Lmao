@@ -1,69 +1,126 @@
 import { config } from './config/index.js';
-import { allAssets, cryptoAssets } from './config/assets.js';
-import { MarketAnalyst } from './team/market-analyst/index.js';
-import { TechnicalStrategist } from './team/technical-strategist/index.js';
-import { MacroEconomist } from './team/macro-economist/index.js';
-import { SentimentAnalyst } from './team/sentiment-analyst/index.js';
-import { RiskManager } from './team/risk-manager/index.js';
-import { Backtester } from './team/backtester/index.js';
-import { Executor } from './team/executor/index.js';
-import { SelfImprover } from './team/self-improver/index.js';
-import { RegimeDetector } from './team/regime-detector/index.js';
-import { ScenarioSimulator } from './team/scenario-simulator/index.js';
+import { allAssets } from './config/assets.js';
+import { AgentNetwork } from './team/agent-network/network.js';
+import { TradingAgent } from './team/agent-network/trading-agent.js';
+import { AgentSpawner } from './team/agent-network/spawner.js';
+import { ExplainabilityEngine } from './team/agent-network/explainability.js';
+import { DecayDetector } from './team/agent-network/decay-detector.js';
+import { ConsensusEngine } from './team/agent-network/consensus.js';
+import { CEOAgent } from './team/ceo/index.js';
+import { TradingTeam } from './team/ceo/trading-team.js';
+import { ResearchTeam } from './team/ceo/research-team.js';
+import { RiskTeam } from './team/ceo/risk-team.js';
+import { EvolutionTeam } from './team/ceo/evolution-team.js';
+import { OpsTeam } from './team/ceo/ops-team.js';
 import { DiagnosticsEngine } from './team/diagnostics/index.js';
-import { OpportunityScanner } from './team/opportunity-scanner/index.js';
-import { AgentSwarm, ConsensusEngine, DecayDetector } from './team/agent-network/index.js';
 import { eventBus } from './shared/events.js';
 import { createModuleLogger } from './shared/logger.js';
 import type { AssetInfo, Timeframe, Signal, MarketData, Candle } from './shared/types.js';
+import type { AgentId } from './shared/agent-types.js';
 
 const log = createModuleLogger('orchestrator');
 
 /**
- * Trading System Orchestrator — coordinates all team members.
- * Now powered by a multi-agent swarm that debates trades.
+ * TradingSystem — CEO-driven multi-team trading architecture.
+ *
+ * Structure:
+ *   CEO
+ *   ├── Trading Team    — decides what/when to trade, executes
+ *   ├── Research Team   — market data, macro, sentiment, scanning
+ *   ├── Risk Team       — position sizing, stops, governance
+ *   ├── Evolution Team  — backtests, evolves strategies, decay detection
+ *   └── Ops Team        — diagnostics, data sources, monitoring
+ *
+ * All agents can discuss with each other across teams.
+ * CEO approves/vetoes requests and issues directives.
  */
-export class TradingOrchestrator {
-  private marketAnalyst = new MarketAnalyst();
-  private strategist = new TechnicalStrategist();
-  private macroEconomist = new MacroEconomist();
-  private sentimentAnalyst = new SentimentAnalyst();
-  private riskManager = new RiskManager();
-  private backtester = new Backtester();
-  private executor = new Executor();
-  private selfImprover = new SelfImprover();
-  private regimeDetector = new RegimeDetector();
-  private scenarioSimulator = new ScenarioSimulator();
-  private diagnosticsEngine = new DiagnosticsEngine();
-  private scanner = new OpportunityScanner();
-  private swarm: AgentSwarm;
+export class TradingSystem {
+  // Core
+  private network = new AgentNetwork();
+  private ceo: CEOAgent;
+
+  // Teams
+  private tradingTeam: TradingTeam;
+  private researchTeam: ResearchTeam;
+  private riskTeam: RiskTeam;
+  private evolutionTeam: EvolutionTeam;
+  private opsTeam: OpsTeam;
+
+  // Agent management
+  private explainability = new ExplainabilityEngine();
+  private spawner!: AgentSpawner;
+  private agents = new Map<AgentId, TradingAgent>();
+  private strategies = new Map<string, import('./shared/types.js').Strategy>();
 
   constructor() {
-    this.swarm = new AgentSwarm({
-      maxAgents: 20,
-      minAgents: 2,       // at least 2 agents per strategy for debate
-      probationThreshold: 30,
-      retireThreshold: 15,
-      spawnCooldownMs: 30_000,
-      evaluationWindowSize: 20,
-      doubtThreshold: 0.2,
-      consensusQuorum: 0.5,
-    });
+    // Create CEO
+    this.ceo = new CEOAgent(this.network);
+
+    // Create teams — each gets the network + CEO id
+    this.tradingTeam = new TradingTeam(this.network, this.ceo.id);
+    this.researchTeam = new ResearchTeam(this.network, this.ceo.id);
+    this.riskTeam = new RiskTeam(this.network, this.ceo.id);
+    this.evolutionTeam = new EvolutionTeam(this.network, this.ceo.id);
+    this.opsTeam = new OpsTeam(this.network, this.ceo.id);
+
+    log.info('TradingSystem created with CEO + 5 teams');
   }
 
   async initialize(): Promise<void> {
-    log.info('Initializing trading system...');
-    await this.selfImprover.initialize();
+    log.info('Initializing CEO-driven trading system...');
 
-    // Register strategies with the agent swarm
-    const strategies = this.strategist.getStrategies();
-    this.swarm.registerStrategies(strategies);
+    // 1. Register all teams with CEO
+    this.ceo.registerTeam(this.tradingTeam.getConfig());
+    this.ceo.registerTeam(this.researchTeam.getConfig());
+    this.ceo.registerTeam(this.riskTeam.getConfig());
+    this.ceo.registerTeam(this.evolutionTeam.getConfig());
+    this.ceo.registerTeam(this.opsTeam.getConfig());
 
-    // Listen for events
+    // 2. Initialize evolution team (loads saved state)
+    await this.evolutionTeam.initialize();
+
+    // 3. Get strategies from research team
+    const strategyList = this.researchTeam.getStrategies();
+    for (const strategy of strategyList) {
+      this.strategies.set(strategy.name, strategy);
+    }
+
+    // 4. Spawn initial trading agents (2 per strategy for debate)
+    for (const strategy of strategyList) {
+      for (let i = 0; i < 2; i++) {
+        const agent = new TradingAgent({
+          strategy,
+          network: this.network,
+          name: `${strategy.name}-prime${i > 0 ? `-${i}` : ''}`,
+        });
+        this.agents.set(agent.id, agent);
+        this.tradingTeam.registerAgent(agent);
+      }
+    }
+
+    // 5. Create spawner for dynamic agent management
+    this.spawner = new AgentSpawner(
+      this.network, this.agents, this.strategies,
+      {
+        maxAgents: 30,
+        minAgents: 2,
+        probationThreshold: 30,
+        retireThreshold: 15,
+        spawnCooldownMs: 30_000,
+        evaluationWindowSize: 20,
+        doubtThreshold: 0.2,
+        consensusQuorum: 0.5,
+      },
+    );
+
+    // 6. CEO sets initial active assets + strategies
+    this.ceo.setActiveAssets(allAssets);
+    this.ceo.setActiveStrategies(strategyList.map(s => s.name));
+
+    // 7. Event listeners
     eventBus.on('signal:generated', (event) => {
       log.debug({ signal: event.data }, 'Signal received');
     });
-
     eventBus.on('evolution:improvement', (event) => {
       log.info({ improvement: event.data }, 'Strategy evolved!');
     });
@@ -72,221 +129,198 @@ export class TradingOrchestrator {
       mode: config.tradingMode,
       capital: config.initialCapital,
       assets: allAssets.length,
-      agents: this.swarm.getAgentProfiles().length,
-    }, 'Trading system ready');
+      agents: this.agents.size,
+      teams: this.ceo.getAllTeams().length,
+    }, 'CEO-driven trading system ready');
   }
 
-  /**
-   * Run full analysis cycle on all assets.
-   */
+  // ----------------------------------------------------------------
+  // Analysis Cycle (delegates to Research Team)
+  // ----------------------------------------------------------------
+
   async analyzeCycle(
     assets: AssetInfo[] = allAssets,
-    timeframe: Timeframe = '1h'
+    timeframe: Timeframe = '1h',
   ): Promise<{ signals: Signal[]; marketDataMap: Map<string, MarketData> }> {
     log.info({ assets: assets.length, timeframe }, 'Starting analysis cycle');
 
-    // 1. Fetch macro environment
-    const macro = await this.macroEconomist.getEnvironment();
-    log.info({ bias: macro.bias, risk: macro.riskLevel }, 'Macro environment assessed');
-
-    // 2. Fetch market data for ALL assets
-    const marketDataMap = new Map<string, MarketData>();
-    for (const asset of assets) {
-      try {
-        const data = await this.marketAnalyst.fetchMarketData(asset, timeframe);
-        if (data.candles.length > 0) {
-          marketDataMap.set(asset.symbol, data);
-        }
-      } catch (err) {
-        log.warn({ asset: asset.symbol, error: (err as Error).message }, 'Failed to fetch data');
-      }
-    }
-
-    // 3. Run technical analysis on EVERY asset
-    const allSignals: Signal[] = [];
-    for (const [, data] of marketDataMap) {
-      const signals = await this.strategist.analyzeAll(data, macro);
-      allSignals.push(...signals);
-    }
+    const macro = await this.researchTeam.getMacroEnvironment();
+    const marketDataMap = await this.researchTeam.fetchAllData(assets, timeframe);
+    const signals = await this.researchTeam.analyzeAll(marketDataMap, macro);
 
     log.info({
       assetsAnalyzed: marketDataMap.size,
-      totalSignals: allSignals.length,
-      buySignals: allSignals.filter((s) => s.action === 'BUY').length,
-      sellSignals: allSignals.filter((s) => s.action === 'SELL').length,
+      totalSignals: signals.length,
+      buySignals: signals.filter(s => s.action === 'BUY').length,
+      sellSignals: signals.filter(s => s.action === 'SELL').length,
     }, 'Analysis cycle complete');
 
-    return { signals: allSignals, marketDataMap };
+    return { signals, marketDataMap };
   }
 
-  /**
-   * Multi-agent trading cycle:
-   *  1. Fetch data for all 109 assets
-   *  2. Each agent independently analyzes and proposes trades
-   *  3. Agents debate — doubt, support, counter each other
-   *  4. Consensus engine resolves debates
-   *  5. Only consensus-approved trades go to risk check
-   *  6. Execute approved trades
-   *  7. Underperformers evolve, top performers spawn children
-   */
+  // ----------------------------------------------------------------
+  // Trading Cycle — CEO-driven flow
+  // ----------------------------------------------------------------
+
   async tradingCycle(
     assets: AssetInfo[] = allAssets,
-    timeframe: Timeframe = '1h'
+    timeframe: Timeframe = '1h',
   ): Promise<void> {
-    // 1. Fetch macro + market data
-    const macro = await this.macroEconomist.getEnvironment();
-    const marketDataMap = new Map<string, MarketData>();
-    for (const asset of assets) {
-      try {
-        const data = await this.marketAnalyst.fetchMarketData(asset, timeframe);
-        if (data.candles.length > 0) marketDataMap.set(asset.symbol, data);
-      } catch (err) {
-        log.warn({ asset: asset.symbol, error: (err as Error).message }, 'Data fetch failed');
-      }
+    const cycle = this.ceo.incrementCycle();
+
+    // 0. Check CEO pause + risk kill switch
+    if (this.ceo.isPaused() || this.riskTeam.isKillSwitchActive()) {
+      log.warn({ cycle }, 'System paused — skipping cycle');
+      return;
     }
 
-    // 2. Update prices and check stops on existing positions
-    const portfolio = this.executor.getPortfolio();
+    log.info({ cycle, agents: this.agents.size }, 'Starting CEO-driven trading cycle');
+
+    // 1. Research team fetches data
+    const macro = await this.researchTeam.getMacroEnvironment();
+    const marketDataMap = await this.researchTeam.fetchAllData(assets, timeframe);
+
+    // 2. Update prices + check stops
     const prices = new Map<string, number>();
     for (const [, data] of marketDataMap) {
       if (data.candles.length > 0) {
         prices.set(data.asset.symbol, data.candles[data.candles.length - 1].close);
       }
     }
-    await this.executor.checkStops(prices);
-    this.executor.updatePrices(prices);
+    await this.tradingTeam.checkStops(prices);
+    this.tradingTeam.updatePrices(prices);
 
-    // 3. Run the multi-agent swarm cycle
-    //    Agents propose → debate → consensus
-    const { approvedSignals, debateSummary, agentReport } = await this.swarm.runCycle(
+    // 3. Trading team runs cycle (agents analyze, debate, execute)
+    const { approvedSignals, debateSummary, executed, rejected } = await this.tradingTeam.runCycle(
       marketDataMap, macro,
     );
 
     // 4. Print debate summary
     console.log(ConsensusEngine.formatDebateSummary(debateSummary));
 
-    // 5. Execute consensus-approved trades through risk manager
-    let executed = 0;
-    let rejected = 0;
+    // 5. Record performance snapshots for decay detection
+    for (const [id, agent] of this.agents) {
+      if (agent.getStatus() === 'retired') continue;
+      this.evolutionTeam.decayDetector.record({
+        timestamp: Date.now(),
+        agentId: id,
+        strategy: agent.getStrategy().name,
+        winRate: agent.getRecentWinRate(),
+        sharpe: 0,
+        pnl: agent.getHistory().totalPnl,
+        reputation: agent.getReputation(),
+        tradesCount: agent.getHistory().successfulTrades + agent.getHistory().failedTrades,
+      });
+    }
 
-    for (const { signal, confidence, proposerId } of approvedSignals) {
-      const candles = marketDataMap.get(signal.asset.symbol)?.candles ?? [];
-      if (candles.length < 20) continue;
+    // 6. Agent lifecycle management
+    const { spawned, retired } = this.spawner.evaluate();
+    for (const agent of spawned) {
+      this.tradingTeam.registerAgent(agent);
+    }
 
-      const risk = this.riskManager.assessRisk(signal, portfolio, candles, macro);
-      if (risk.approved) {
-        const result = await this.executor.execute(signal, risk);
-        if (result.success) {
-          executed++;
-          log.info({
-            symbol: signal.asset.symbol,
-            action: signal.action,
-            confidence: confidence.toFixed(2),
-            proposer: proposerId.slice(0, 8),
-          }, 'Consensus trade executed');
-        }
-      } else {
-        rejected++;
+    // 7. Evolve underperformers every 5 cycles
+    if (cycle % 5 === 0) {
+      this.spawner.evolveUnderperformers();
+    }
+
+    // 8. Decay analysis every 15 cycles
+    if (cycle % 15 === 0) {
+      const decayResults = this.evolutionTeam.analyzeDecay();
+      const decaying = decayResults.filter(d => d.isDecaying);
+      if (decaying.length > 0) {
+        log.warn({ decaying: decaying.length }, 'Strategy decay detected');
+        console.log(DecayDetector.formatReport(decayResults));
       }
     }
 
-    // 6. Print swarm status
-    console.log(agentReport);
-
-    // 7. Summary
-    console.log(`\n=== Trading Cycle Summary ===`);
+    // 9. Print summary
+    console.log(`\n=== Trading Cycle ${cycle} Summary ===`);
     console.log(`Assets scanned: ${marketDataMap.size}`);
     console.log(`Agent debates: ${debateSummary.length}`);
     console.log(`Consensus approved: ${approvedSignals.length}`);
     console.log(`Trades executed: ${executed}, risk-rejected: ${rejected}`);
-    console.log(`Active agents: ${this.swarm.getAgentProfiles().filter(a => a.status === 'active').length}`);
-    console.log(this.executor.getSummary());
+    console.log(`Active agents: ${[...this.agents.values()].filter(a => a.getStatus() === 'active').length}`);
+    console.log(`Spawned: ${spawned.length}, Retired: ${retired.length}`);
+    console.log(this.tradingTeam.getPortfolioSummary());
 
-    // 8. Print data source status if there are pending requests
-    const pendingData = this.swarm.dataSourceManager.getPendingRequests();
-    if (pendingData.length > 0) {
-      console.log(this.swarm.dataSourceManager.formatReport());
-    }
+    // 10. CEO dashboard
+    console.log(this.ceo.formatReport(this.tradingTeam.getPortfolio()));
   }
 
-  /**
-   * Run backtest for all strategies on an asset.
-   */
+  // ----------------------------------------------------------------
+  // Backtest (delegates to Evolution Team)
+  // ----------------------------------------------------------------
+
   async runBacktest(asset: AssetInfo, timeframe: Timeframe = '1h') {
-    const data = await this.marketAnalyst.fetchMarketData(asset, timeframe);
+    const data = await this.researchTeam.marketAnalyst.fetchMarketData(asset, timeframe);
     if (data.candles.length < 100) {
       log.warn({ asset: asset.symbol, candles: data.candles.length }, 'Insufficient data for backtest');
       return;
     }
 
-    const strategies = this.strategist.getStrategies();
-    const results = await this.backtester.compareStrategies(strategies, data.candles, asset, timeframe);
+    const strategies = this.researchTeam.getStrategies();
+    const results = await this.evolutionTeam.runAllBacktests(strategies, data.candles, asset, timeframe);
 
-    for (const result of results) {
-      await this.selfImprover.recordResult(result);
-    }
-
-    console.log(this.selfImprover.getLeaderboard());
+    console.log(this.evolutionTeam.getLeaderboard());
     return results;
   }
 
-  /**
-   * Run evolution cycle for all strategies.
-   */
+  // ----------------------------------------------------------------
+  // Evolution (delegates to Evolution Team — internal, no API)
+  // ----------------------------------------------------------------
+
   async runEvolution(asset: AssetInfo, timeframe: Timeframe = '1h') {
-    const data = await this.marketAnalyst.fetchMarketData(asset, timeframe);
+    const data = await this.researchTeam.marketAnalyst.fetchMarketData(asset, timeframe);
     if (data.candles.length < 100) {
       log.warn('Insufficient data for evolution');
       return;
     }
 
-    const strategies = this.strategist.getStrategies();
+    const strategies = this.researchTeam.getStrategies();
     for (const strategy of strategies) {
-      const { improved, bestDna } = await this.selfImprover.evolveStrategy(
-        strategy, data.candles, asset, timeframe
+      const { improved, bestDna } = await this.evolutionTeam.evolveStrategy(
+        strategy, data.candles, asset, timeframe,
       );
-
       if (improved) {
-        this.strategist.updateDNA(strategy.name, bestDna);
-        log.info({ strategy: strategy.name }, 'Strategy DNA updated with evolved parameters');
+        this.researchTeam.strategist.updateDNA(strategy.name, bestDna);
+        log.info({ strategy: strategy.name }, 'Strategy DNA updated');
       }
     }
 
-    await this.selfImprover.save();
-    console.log(this.selfImprover.getLeaderboard());
+    await this.evolutionTeam.save();
+    console.log(this.evolutionTeam.getLeaderboard());
   }
 
-  /**
-   * Run full diagnostic scan.
-   */
+  // ----------------------------------------------------------------
+  // Diagnostics (delegates to Ops + Research + Risk)
+  // ----------------------------------------------------------------
+
   async runDiagnostics(
     assets: AssetInfo[] = allAssets,
-    timeframe: Timeframe = '1h'
+    timeframe: Timeframe = '1h',
   ) {
     log.info('Running full diagnostic scan...');
 
-    const macro = await this.macroEconomist.getEnvironment();
+    const macro = await this.researchTeam.getMacroEnvironment();
+    const marketDataMap = await this.researchTeam.fetchAllData(assets, timeframe);
+
     const candlesMap = new Map<string, Candle[]>();
-    for (const asset of assets) {
-      try {
-        const data = await this.marketAnalyst.fetchMarketData(asset, timeframe);
-        if (data.candles.length > 0) candlesMap.set(asset.symbol, data.candles);
-      } catch { /* skip */ }
+    for (const [symbol, data] of marketDataMap) {
+      if (data.candles.length > 0) candlesMap.set(symbol, data.candles);
     }
 
-    const firstCandles = [...candlesMap.values()][0];
-    const regime = firstCandles
-      ? this.regimeDetector.detect(firstCandles, macro)
-      : undefined;
+    const regime = this.researchTeam.detectRegime(marketDataMap, macro);
 
     const firstAsset = assets[0];
+    const firstCandles = [...candlesMap.values()][0];
     const simulation = firstCandles && regime
-      ? this.scenarioSimulator.simulate(firstAsset, firstCandles, regime.regime, macro)
+      ? this.opsTeam.scenarioSimulator.simulate(firstAsset, firstCandles, regime.regime, macro)
       : undefined;
 
-    const report = this.diagnosticsEngine.scan({
+    const report = this.opsTeam.runDiagnostics({
       candles: candlesMap,
-      portfolio: this.executor.getPortfolio(),
+      portfolio: this.tradingTeam.getPortfolio(),
       regime,
       simulation,
       macro,
@@ -303,9 +337,9 @@ export class TradingOrchestrator {
       console.log(`Outlook: ${simulation.overallOutlook.toUpperCase()}`);
       console.log(`Best case: ${simulation.bestScenario} | Worst case: ${simulation.worstScenario}`);
       console.log('\nKey Risks:');
-      simulation.keyRisks.forEach((r) => console.log(`  - ${r}`));
+      simulation.keyRisks.forEach(r => console.log(`  - ${r}`));
       console.log('\nOpportunities:');
-      simulation.opportunities.forEach((o) => console.log(`  + ${o}`));
+      simulation.opportunities.forEach(o => console.log(`  + ${o}`));
       console.log('\nScenarios:');
       for (const s of simulation.scenarios) {
         console.log(`  ${s.name} (${(s.probability * 100).toFixed(0)}%): ${s.expectedReturn > 0 ? '+' : ''}${s.expectedReturn}% expected`);
@@ -314,11 +348,15 @@ export class TradingOrchestrator {
 
     console.log(DiagnosticsEngine.formatReport(report));
 
-    // Agent swarm status + governance + XAI + decay
-    console.log(this.swarm.formatFullReport());
+    // Team reports
+    console.log(this.riskTeam.formatReport());
+    console.log(this.opsTeam.getDataSourceReport());
 
-    // Decay analysis
-    const decayResults = this.swarm.decayDetector.analyzeAll();
+    // CEO dashboard
+    console.log(this.ceo.formatReport(this.tradingTeam.getPortfolio()));
+
+    // Decay
+    const decayResults = this.evolutionTeam.analyzeDecay();
     if (decayResults.length > 0) {
       console.log(DecayDetector.formatReport(decayResults));
     }
@@ -326,53 +364,77 @@ export class TradingOrchestrator {
     return { regime, simulation, report };
   }
 
-  /** Get portfolio summary */
+  // ----------------------------------------------------------------
+  // Accessors (backwards compat for scripts)
+  // ----------------------------------------------------------------
+
   getPortfolioSummary(): string {
-    return this.executor.getSummary();
+    return this.tradingTeam.getPortfolioSummary();
   }
 
-  /** Get the agent swarm instance */
-  getSwarm(): AgentSwarm {
-    return this.swarm;
+  getSwarm() {
+    return {
+      getAgentProfiles: () => [...this.agents.values()].map(a => a.profile),
+      dataSourceManager: this.opsTeam.dataSourceManager,
+      decayDetector: this.evolutionTeam.decayDetector,
+      formatFullReport: () => [
+        this.ceo.formatReport(this.tradingTeam.getPortfolio()),
+        this.riskTeam.formatReport(),
+        this.opsTeam.getDataSourceReport(),
+      ].join('\n'),
+    };
   }
 
-  /** Save all system state */
+  getCeo(): CEOAgent { return this.ceo; }
+  getTradingTeam(): TradingTeam { return this.tradingTeam; }
+  getResearchTeam(): ResearchTeam { return this.researchTeam; }
+  getRiskTeam(): RiskTeam { return this.riskTeam; }
+  getEvolutionTeam(): EvolutionTeam { return this.evolutionTeam; }
+  getOpsTeam(): OpsTeam { return this.opsTeam; }
+
   async shutdown(): Promise<void> {
-    await this.selfImprover.save();
+    await this.evolutionTeam.save();
     log.info('System state saved. Shutting down.');
   }
 }
 
+/** Backwards-compatible alias for scripts */
+export const TradingOrchestrator = TradingSystem;
+
+// ----------------------------------------------------------------
 // Main entry point
+// ----------------------------------------------------------------
+
 async function main() {
-  const orchestrator = new TradingOrchestrator();
-  await orchestrator.initialize();
+  const system = new TradingSystem();
+  await system.initialize();
 
-  const swarm = orchestrator.getSwarm();
-  const agents = swarm.getAgentProfiles();
+  const teams = system.getCeo().getAllTeams();
 
-  console.log('\n=== Trading Algorithm System (Multi-Agent) ===');
+  console.log('\n=== Trading Algorithm System (CEO + 5 Teams) ===');
   console.log(`Mode: ${config.tradingMode}`);
   console.log(`Capital: $${config.initialCapital}`);
   console.log(`Assets: ${allAssets.length} total`);
-  console.log(`Agents: ${agents.length} autonomous trading agents`);
-  console.log(`  Each agent proposes, debates, and evolves independently`);
+  console.log(`Teams: ${teams.length}`);
+  for (const team of teams) {
+    console.log(`  ${team.name}: ${team.memberIds.length} agents`);
+  }
   console.log('\nRun scripts:');
-  console.log('  npm run paper-trade  — Multi-agent paper trading (debate + consensus)');
+  console.log('  npm run paper-trade  — CEO-driven multi-team paper trading');
   console.log('  npm run backtest     — Backtest ALL assets');
   console.log('  npm run analyze      — Analyze ALL markets');
-  console.log('  npm run evolve       — Evolve strategies across ALL assets');
-  console.log('  npm run diagnose     — Full diagnostic (includes swarm report)');
+  console.log('  npm run evolve       — Evolve strategies (internal, no API)');
+  console.log('  npm run diagnose     — Full diagnostic (CEO dashboard)');
   console.log('  npm run scan         — Scan for best opportunities');
   console.log('');
 }
 
-// Process watchdog: force-exit if main() hangs beyond the configured timeout
+// Process watchdog
 const watchdog = setTimeout(() => {
   console.error(`WATCHDOG: Process exceeded ${config.processWatchdogMs}ms — forcing exit`);
   process.exit(1);
 }, config.processWatchdogMs);
-watchdog.unref(); // don't keep process alive just for the watchdog
+watchdog.unref();
 
 main()
   .catch(console.error)
