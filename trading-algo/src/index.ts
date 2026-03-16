@@ -12,6 +12,7 @@ import { RegimeDetector } from './team/regime-detector/index.js';
 import { ScenarioSimulator } from './team/scenario-simulator/index.js';
 import { DiagnosticsEngine } from './team/diagnostics/index.js';
 import { OpportunityScanner } from './team/opportunity-scanner/index.js';
+import { AgentSwarm, ConsensusEngine } from './team/agent-network/index.js';
 import { eventBus } from './shared/events.js';
 import { createModuleLogger } from './shared/logger.js';
 import type { AssetInfo, Timeframe, Signal, MarketData, Candle } from './shared/types.js';
@@ -20,7 +21,7 @@ const log = createModuleLogger('orchestrator');
 
 /**
  * Trading System Orchestrator — coordinates all team members.
- * Scans ALL asset classes, ranks opportunities, and builds its own portfolio.
+ * Now powered by a multi-agent swarm that debates trades.
  */
 export class TradingOrchestrator {
   private marketAnalyst = new MarketAnalyst();
@@ -35,10 +36,28 @@ export class TradingOrchestrator {
   private scenarioSimulator = new ScenarioSimulator();
   private diagnosticsEngine = new DiagnosticsEngine();
   private scanner = new OpportunityScanner();
+  private swarm: AgentSwarm;
+
+  constructor() {
+    this.swarm = new AgentSwarm({
+      maxAgents: 20,
+      minAgents: 2,       // at least 2 agents per strategy for debate
+      probationThreshold: 30,
+      retireThreshold: 15,
+      spawnCooldownMs: 30_000,
+      evaluationWindowSize: 20,
+      doubtThreshold: 0.2,
+      consensusQuorum: 0.5,
+    });
+  }
 
   async initialize(): Promise<void> {
     log.info('Initializing trading system...');
     await this.selfImprover.initialize();
+
+    // Register strategies with the agent swarm
+    const strategies = this.strategist.getStrategies();
+    this.swarm.registerStrategies(strategies);
 
     // Listen for events
     eventBus.on('signal:generated', (event) => {
@@ -53,12 +72,12 @@ export class TradingOrchestrator {
       mode: config.tradingMode,
       capital: config.initialCapital,
       assets: allAssets.length,
+      agents: this.swarm.getAgentProfiles().length,
     }, 'Trading system ready');
   }
 
   /**
    * Run full analysis cycle on all assets.
-   * Returns signals AND the market data map for downstream use.
    */
   async analyzeCycle(
     assets: AssetInfo[] = allAssets,
@@ -70,7 +89,7 @@ export class TradingOrchestrator {
     const macro = await this.macroEconomist.getEnvironment();
     log.info({ bias: macro.bias, risk: macro.riskLevel }, 'Macro environment assessed');
 
-    // 2. Fetch market data for ALL assets across ALL classes
+    // 2. Fetch market data for ALL assets
     const marketDataMap = new Map<string, MarketData>();
     for (const asset of assets) {
       try {
@@ -85,7 +104,7 @@ export class TradingOrchestrator {
 
     // 3. Run technical analysis on EVERY asset
     const allSignals: Signal[] = [];
-    for (const [symbol, data] of marketDataMap) {
+    for (const [, data] of marketDataMap) {
       const signals = await this.strategist.analyzeAll(data, macro);
       allSignals.push(...signals);
     }
@@ -101,81 +120,93 @@ export class TradingOrchestrator {
   }
 
   /**
-   * Smart trading cycle: scan ALL assets → rank opportunities →
-   * select best portfolio → execute trades.
-   * The agent autonomously chooses which assets to trade.
+   * Multi-agent trading cycle:
+   *  1. Fetch data for all 109 assets
+   *  2. Each agent independently analyzes and proposes trades
+   *  3. Agents debate — doubt, support, counter each other
+   *  4. Consensus engine resolves debates
+   *  5. Only consensus-approved trades go to risk check
+   *  6. Execute approved trades
+   *  7. Underperformers evolve, top performers spawn children
    */
   async tradingCycle(
     assets: AssetInfo[] = allAssets,
     timeframe: Timeframe = '1h'
   ): Promise<void> {
-    // 1. Analyze ALL assets across crypto, stocks, forex
-    const { signals, marketDataMap } = await this.analyzeCycle(assets, timeframe);
-    const portfolio = this.executor.getPortfolio();
+    // 1. Fetch macro + market data
     const macro = await this.macroEconomist.getEnvironment();
+    const marketDataMap = new Map<string, MarketData>();
+    for (const asset of assets) {
+      try {
+        const data = await this.marketAnalyst.fetchMarketData(asset, timeframe);
+        if (data.candles.length > 0) marketDataMap.set(asset.symbol, data);
+      } catch (err) {
+        log.warn({ asset: asset.symbol, error: (err as Error).message }, 'Data fetch failed');
+      }
+    }
 
     // 2. Update prices and check stops on existing positions
+    const portfolio = this.executor.getPortfolio();
     const prices = new Map<string, number>();
-    for (const signal of signals) {
-      prices.set(signal.asset.symbol, signal.price);
+    for (const [, data] of marketDataMap) {
+      if (data.candles.length > 0) {
+        prices.set(data.asset.symbol, data.candles[data.candles.length - 1].close);
+      }
     }
     await this.executor.checkStops(prices);
     this.executor.updatePrices(prices);
 
-    // 3. Scan and rank all opportunities
-    const opportunities = this.scanner.scan(signals, marketDataMap, macro);
+    // 3. Run the multi-agent swarm cycle
+    //    Agents propose → debate → consensus
+    const { approvedSignals, debateSummary, agentReport } = await this.swarm.runCycle(
+      marketDataMap, macro,
+    );
 
-    // 4. Let the agent select its own portfolio
-    const maxNewPositions = Math.max(1, 10 - portfolio.positions.length);
-    const selected = this.scanner.selectPortfolio(opportunities, {
-      maxPositions: maxNewPositions,
-      minScore: 35,
-      minConfidence: 0.55,
-      diversify: true,
-    });
+    // 4. Print debate summary
+    console.log(ConsensusEngine.formatDebateSummary(debateSummary));
 
-    // 5. Print opportunity report
-    if (opportunities.length > 0) {
-      console.log(OpportunityScanner.formatReport(opportunities));
-    }
-
-    // 6. Execute trades on selected opportunities
+    // 5. Execute consensus-approved trades through risk manager
     let executed = 0;
     let rejected = 0;
 
-    for (const opp of selected) {
-      // Use the highest-confidence signal from this opportunity
-      const bestSignal = opp.signals.sort((a, b) => b.confidence - a.confidence)[0];
-      const candles = marketDataMap.get(opp.asset.symbol)?.candles ?? [];
-
+    for (const { signal, confidence, proposerId } of approvedSignals) {
+      const candles = marketDataMap.get(signal.asset.symbol)?.candles ?? [];
       if (candles.length < 20) continue;
 
-      const risk = this.riskManager.assessRisk(bestSignal, portfolio, candles, macro);
+      const risk = this.riskManager.assessRisk(signal, portfolio, candles, macro);
       if (risk.approved) {
-        const result = await this.executor.execute(bestSignal, risk);
+        const result = await this.executor.execute(signal, risk);
         if (result.success) {
           executed++;
           log.info({
-            symbol: opp.asset.symbol,
-            action: opp.action,
-            score: opp.score,
-            strategy: bestSignal.strategy,
-          }, 'Trade executed from opportunity');
+            symbol: signal.asset.symbol,
+            action: signal.action,
+            confidence: confidence.toFixed(2),
+            proposer: proposerId.slice(0, 8),
+          }, 'Consensus trade executed');
         }
       } else {
         rejected++;
-        log.debug({ symbol: opp.asset.symbol, reason: risk.reason }, 'Opportunity rejected by risk');
       }
     }
 
+    // 6. Print swarm status
+    console.log(agentReport);
+
     // 7. Summary
     console.log(`\n=== Trading Cycle Summary ===`);
-    console.log(`Assets scanned: ${marketDataMap.size} (crypto: ${assets.filter(a => a.assetClass === 'crypto').length}, stocks: ${assets.filter(a => a.assetClass === 'stock').length}, forex: ${assets.filter(a => a.assetClass === 'forex').length})`);
-    console.log(`Signals generated: ${signals.length}`);
-    console.log(`Opportunities found: ${opportunities.length}`);
-    console.log(`Selected for trading: ${selected.length}`);
-    console.log(`Trades executed: ${executed}, rejected: ${rejected}`);
+    console.log(`Assets scanned: ${marketDataMap.size}`);
+    console.log(`Agent debates: ${debateSummary.length}`);
+    console.log(`Consensus approved: ${approvedSignals.length}`);
+    console.log(`Trades executed: ${executed}, risk-rejected: ${rejected}`);
+    console.log(`Active agents: ${this.swarm.getAgentProfiles().filter(a => a.status === 'active').length}`);
     console.log(this.executor.getSummary());
+
+    // 8. Print data source status if there are pending requests
+    const pendingData = this.swarm.dataSourceManager.getPendingRequests();
+    if (pendingData.length > 0) {
+      console.log(this.swarm.dataSourceManager.formatReport());
+    }
   }
 
   /**
@@ -226,7 +257,7 @@ export class TradingOrchestrator {
   }
 
   /**
-   * Run full diagnostic scan — detect anomalies, risks, problems.
+   * Run full diagnostic scan.
    */
   async runDiagnostics(
     assets: AssetInfo[] = allAssets,
@@ -234,7 +265,6 @@ export class TradingOrchestrator {
   ) {
     log.info('Running full diagnostic scan...');
 
-    // Fetch data
     const macro = await this.macroEconomist.getEnvironment();
     const candlesMap = new Map<string, Candle[]>();
     for (const asset of assets) {
@@ -244,19 +274,16 @@ export class TradingOrchestrator {
       } catch { /* skip */ }
     }
 
-    // Detect regime for first asset with data
     const firstCandles = [...candlesMap.values()][0];
     const regime = firstCandles
       ? this.regimeDetector.detect(firstCandles, macro)
       : undefined;
 
-    // Run scenario simulation for first asset
     const firstAsset = assets[0];
     const simulation = firstCandles && regime
       ? this.scenarioSimulator.simulate(firstAsset, firstCandles, regime.regime, macro)
       : undefined;
 
-    // Run diagnostics
     const report = this.diagnosticsEngine.scan({
       candles: candlesMap,
       portfolio: this.executor.getPortfolio(),
@@ -265,7 +292,6 @@ export class TradingOrchestrator {
       macro,
     });
 
-    // Print reports
     if (regime) {
       console.log(`\n=== Market Regime: ${regime.regime.toUpperCase()} (${(regime.confidence * 100).toFixed(0)}% confidence) ===`);
       console.log(regime.details);
@@ -287,19 +313,24 @@ export class TradingOrchestrator {
     }
 
     console.log(DiagnosticsEngine.formatReport(report));
+
+    // Also show agent swarm status
+    console.log(this.swarm.formatFullReport());
+
     return { regime, simulation, report };
   }
 
-  /**
-   * Get portfolio summary.
-   */
+  /** Get portfolio summary */
   getPortfolioSummary(): string {
     return this.executor.getSummary();
   }
 
-  /**
-   * Save all system state.
-   */
+  /** Get the agent swarm instance */
+  getSwarm(): AgentSwarm {
+    return this.swarm;
+  }
+
+  /** Save all system state */
   async shutdown(): Promise<void> {
     await this.selfImprover.save();
     log.info('System state saved. Shutting down.');
@@ -311,16 +342,21 @@ async function main() {
   const orchestrator = new TradingOrchestrator();
   await orchestrator.initialize();
 
-  console.log('\n=== Trading Algorithm System ===');
+  const swarm = orchestrator.getSwarm();
+  const agents = swarm.getAgentProfiles();
+
+  console.log('\n=== Trading Algorithm System (Multi-Agent) ===');
   console.log(`Mode: ${config.tradingMode}`);
   console.log(`Capital: $${config.initialCapital}`);
-  console.log(`Assets: ${allAssets.length} total (8 crypto, 8 stocks, 6 forex)`);
+  console.log(`Assets: ${allAssets.length} total`);
+  console.log(`Agents: ${agents.length} autonomous trading agents`);
+  console.log(`  Each agent proposes, debates, and evolves independently`);
   console.log('\nRun scripts:');
+  console.log('  npm run paper-trade  — Multi-agent paper trading (debate + consensus)');
   console.log('  npm run backtest     — Backtest ALL assets');
-  console.log('  npm run paper-trade  — Paper trade ALL assets (agent selects portfolio)');
   console.log('  npm run analyze      — Analyze ALL markets');
   console.log('  npm run evolve       — Evolve strategies across ALL assets');
-  console.log('  npm run diagnose     — Run diagnostic scan');
+  console.log('  npm run diagnose     — Full diagnostic (includes swarm report)');
   console.log('  npm run scan         — Scan for best opportunities');
   console.log('');
 }
