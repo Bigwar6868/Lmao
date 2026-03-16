@@ -2,6 +2,26 @@
 
 A self-evolving multi-asset trading algorithm with a **multi-agent debate system** built in TypeScript. Covers crypto, stocks, and forex with autonomous agents that propose, challenge, and vote on trades before execution.
 
+## Auto Install (One Line)
+
+**macOS / Linux:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/Bigwar6868/Lmao/claude/trading-algorithm-repo-pmnQ1/install.sh | bash
+```
+
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/Bigwar6868/Lmao/claude/trading-algorithm-repo-pmnQ1/install.ps1 | iex
+```
+
+The installer will:
+1. Check Node.js 20+ and Git are installed
+2. Clone the repo and checkout the correct branch
+3. Run `npm install`
+4. Create `.env` from `.env.example`
+5. Run all 32 tests to verify setup
+6. Print available commands
+
 ## Prerequisites
 
 - **Node.js** >= 20.0.0 (check with `node -v`)
