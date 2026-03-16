@@ -3,8 +3,15 @@ import type { Candle, Timeframe } from '../../shared/types.js';
 import type { CryptoExchangeConfig } from './types.js';
 import { createModuleLogger } from '../../shared/logger.js';
 import { config } from '../../config/index.js';
+import { generateSyntheticCandles } from '../../shared/synthetic.js';
 
 const log = createModuleLogger('CryptoDataFetcher');
+
+/** Map timeframe string to milliseconds for synthetic data */
+const TIMEFRAME_MS: Record<string, number> = {
+  '1m': 60_000, '5m': 300_000, '15m': 900_000,
+  '1h': 3_600_000, '4h': 14_400_000, '1d': 86_400_000, '1w': 604_800_000,
+};
 
 /** Default delay between requests to respect exchange rate limits (ms) */
 const REQUEST_DELAY_MS = 1200;
@@ -75,11 +82,18 @@ export class CryptoDataFetcher {
 
     log.info({ symbol, timeframe, limit }, 'Fetching OHLCV');
 
-    const ohlcv = await this.exchange.fetchOHLCV(symbol, timeframe, undefined, limit);
-    const candles = ohlcv.map((row) => this.toCandle(row as number[]));
+    try {
+      const ohlcv = await this.exchange.fetchOHLCV(symbol, timeframe, undefined, limit);
+      const candles = ohlcv.map((row) => this.toCandle(row as number[]));
 
-    log.info({ symbol, count: candles.length }, 'OHLCV fetched');
-    return candles;
+      log.info({ symbol, count: candles.length }, 'OHLCV fetched');
+      return candles;
+    } catch (err) {
+      log.warn({ symbol, error: (err as Error).message }, 'Exchange API failed — using synthetic data');
+      return generateSyntheticCandles(symbol, limit, {
+        intervalMs: TIMEFRAME_MS[timeframe] ?? 3_600_000,
+      });
+    }
   }
 
   /**

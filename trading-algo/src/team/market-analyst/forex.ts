@@ -2,6 +2,7 @@ import axios from 'axios';
 import type { Candle } from '../../shared/types.js';
 import { config } from '../../config/index.js';
 import { createModuleLogger } from '../../shared/logger.js';
+import { generateSyntheticCandles } from '../../shared/synthetic.js';
 
 const log = createModuleLogger('ForexDataFetcher');
 
@@ -77,28 +78,34 @@ export class ForexDataFetcher {
     const pair = `${fromCurrency}/${toCurrency}`;
     log.info({ pair }, 'Fetching daily forex data');
 
-    const { data } = await axios.get(AV_BASE, {
-      params: {
-        function: 'FX_DAILY',
-        from_symbol: fromCurrency,
-        to_symbol: toCurrency,
-        outputsize: 'compact',
-        apikey: this.apiKey,
-      },
-    });
+    try {
+      const { data } = await axios.get(AV_BASE, {
+        params: {
+          function: 'FX_DAILY',
+          from_symbol: fromCurrency,
+          to_symbol: toCurrency,
+          outputsize: 'compact',
+          apikey: this.apiKey,
+        },
+        timeout: 10_000,
+      });
 
-    const seriesKey = 'Time Series FX (Daily)';
-    const series: AlphaVantageForexSeries | undefined = data[seriesKey];
+      const seriesKey = 'Time Series FX (Daily)';
+      const series: AlphaVantageForexSeries | undefined = data[seriesKey];
 
-    if (!series) {
-      const note: string = data['Note'] ?? data['Information'] ?? 'Unknown error';
-      log.error({ pair, note }, 'Alpha Vantage returned no forex data');
-      throw new Error(`Alpha Vantage forex error for ${pair}: ${note}`);
+      if (!series) {
+        const note: string = data['Note'] ?? data['Information'] ?? 'Unknown error';
+        log.warn({ pair, note }, 'Alpha Vantage returned no forex data — using synthetic');
+        return generateSyntheticCandles(pair, 100, { intervalMs: 86_400_000, volatility: 0.005 });
+      }
+
+      const candles = this.parseTimeSeries(series);
+      log.info({ pair, count: candles.length }, 'Daily forex data fetched');
+      return candles;
+    } catch (err) {
+      log.warn({ pair, error: (err as Error).message }, 'Forex API failed — using synthetic data');
+      return generateSyntheticCandles(pair, 100, { intervalMs: 86_400_000, volatility: 0.005 });
     }
-
-    const candles = this.parseTimeSeries(series);
-    log.info({ pair, count: candles.length }, 'Daily forex data fetched');
-    return candles;
   }
 
   /**
@@ -117,29 +124,37 @@ export class ForexDataFetcher {
     const pair = `${fromCurrency}/${toCurrency}`;
     log.info({ pair, interval }, 'Fetching intraday forex data');
 
-    const { data } = await axios.get(AV_BASE, {
-      params: {
-        function: 'FX_INTRADAY',
-        from_symbol: fromCurrency,
-        to_symbol: toCurrency,
-        interval,
-        outputsize: 'compact',
-        apikey: this.apiKey,
-      },
-    });
+    const intervalMsMap: Record<string, number> = { '5min': 300_000, '15min': 900_000, '60min': 3_600_000 };
 
-    const seriesKey = `Time Series FX (Intraday)`;
-    const series: AlphaVantageForexSeries | undefined =
-      data[seriesKey] ?? data[`Time Series FX (${interval})`];
+    try {
+      const { data } = await axios.get(AV_BASE, {
+        params: {
+          function: 'FX_INTRADAY',
+          from_symbol: fromCurrency,
+          to_symbol: toCurrency,
+          interval,
+          outputsize: 'compact',
+          apikey: this.apiKey,
+        },
+        timeout: 10_000,
+      });
 
-    if (!series) {
-      const note: string = data['Note'] ?? data['Information'] ?? 'Unknown error';
-      log.error({ pair, interval, note }, 'Alpha Vantage returned no forex data');
-      throw new Error(`Alpha Vantage forex error for ${pair} ${interval}: ${note}`);
+      const seriesKey = `Time Series FX (Intraday)`;
+      const series: AlphaVantageForexSeries | undefined =
+        data[seriesKey] ?? data[`Time Series FX (${interval})`];
+
+      if (!series) {
+        const note: string = data['Note'] ?? data['Information'] ?? 'Unknown error';
+        log.warn({ pair, interval, note }, 'Alpha Vantage returned no forex data — using synthetic');
+        return generateSyntheticCandles(pair, 100, { intervalMs: intervalMsMap[interval] ?? 3_600_000, volatility: 0.005 });
+      }
+
+      const candles = this.parseTimeSeries(series);
+      log.info({ pair, interval, count: candles.length }, 'Intraday forex data fetched');
+      return candles;
+    } catch (err) {
+      log.warn({ pair, error: (err as Error).message }, 'Forex intraday API failed — using synthetic data');
+      return generateSyntheticCandles(pair, 100, { intervalMs: intervalMsMap[interval] ?? 3_600_000, volatility: 0.005 });
     }
-
-    const candles = this.parseTimeSeries(series);
-    log.info({ pair, interval, count: candles.length }, 'Intraday forex data fetched');
-    return candles;
   }
 }

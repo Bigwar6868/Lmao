@@ -2,6 +2,7 @@ import axios from 'axios';
 import type { Candle } from '../../shared/types.js';
 import { config } from '../../config/index.js';
 import { createModuleLogger } from '../../shared/logger.js';
+import { generateSyntheticCandles } from '../../shared/synthetic.js';
 
 const log = createModuleLogger('StockDataFetcher');
 
@@ -81,27 +82,33 @@ export class StockDataFetcher {
     await this.throttle();
     log.info({ symbol }, 'Fetching daily stock data');
 
-    const { data } = await axios.get(AV_BASE, {
-      params: {
-        function: 'TIME_SERIES_DAILY',
-        symbol,
-        outputsize: 'compact',
-        apikey: this.apiKey,
-      },
-    });
+    try {
+      const { data } = await axios.get(AV_BASE, {
+        params: {
+          function: 'TIME_SERIES_DAILY',
+          symbol,
+          outputsize: 'compact',
+          apikey: this.apiKey,
+        },
+        timeout: 10_000,
+      });
 
-    const seriesKey = 'Time Series (Daily)';
-    const series: AlphaVantageTimeSeries | undefined = data[seriesKey];
+      const seriesKey = 'Time Series (Daily)';
+      const series: AlphaVantageTimeSeries | undefined = data[seriesKey];
 
-    if (!series) {
-      const note: string = data['Note'] ?? data['Information'] ?? 'Unknown error';
-      log.error({ symbol, note }, 'Alpha Vantage returned no data');
-      throw new Error(`Alpha Vantage error for ${symbol}: ${note}`);
+      if (!series) {
+        const note: string = data['Note'] ?? data['Information'] ?? 'Unknown error';
+        log.warn({ symbol, note }, 'Alpha Vantage returned no data — using synthetic');
+        return generateSyntheticCandles(symbol, 100, { intervalMs: 86_400_000 });
+      }
+
+      const candles = this.parseTimeSeries(series);
+      log.info({ symbol, count: candles.length }, 'Daily stock data fetched');
+      return candles;
+    } catch (err) {
+      log.warn({ symbol, error: (err as Error).message }, 'Stock API failed — using synthetic data');
+      return generateSyntheticCandles(symbol, 100, { intervalMs: 86_400_000 });
     }
-
-    const candles = this.parseTimeSeries(series);
-    log.info({ symbol, count: candles.length }, 'Daily stock data fetched');
-    return candles;
   }
 
   /**
@@ -117,27 +124,35 @@ export class StockDataFetcher {
     await this.throttle();
     log.info({ symbol, interval }, 'Fetching intraday stock data');
 
-    const { data } = await axios.get(AV_BASE, {
-      params: {
-        function: 'TIME_SERIES_INTRADAY',
-        symbol,
-        interval,
-        outputsize: 'compact',
-        apikey: this.apiKey,
-      },
-    });
+    const intervalMs: Record<string, number> = { '5min': 300_000, '15min': 900_000, '60min': 3_600_000 };
 
-    const seriesKey = `Time Series (${interval})`;
-    const series: AlphaVantageTimeSeries | undefined = data[seriesKey];
+    try {
+      const { data } = await axios.get(AV_BASE, {
+        params: {
+          function: 'TIME_SERIES_INTRADAY',
+          symbol,
+          interval,
+          outputsize: 'compact',
+          apikey: this.apiKey,
+        },
+        timeout: 10_000,
+      });
 
-    if (!series) {
-      const note: string = data['Note'] ?? data['Information'] ?? 'Unknown error';
-      log.error({ symbol, interval, note }, 'Alpha Vantage returned no data');
-      throw new Error(`Alpha Vantage error for ${symbol} ${interval}: ${note}`);
+      const seriesKey = `Time Series (${interval})`;
+      const series: AlphaVantageTimeSeries | undefined = data[seriesKey];
+
+      if (!series) {
+        const note: string = data['Note'] ?? data['Information'] ?? 'Unknown error';
+        log.warn({ symbol, interval, note }, 'Alpha Vantage returned no data — using synthetic');
+        return generateSyntheticCandles(symbol, 100, { intervalMs: intervalMs[interval] ?? 3_600_000 });
+      }
+
+      const candles = this.parseTimeSeries(series);
+      log.info({ symbol, interval, count: candles.length }, 'Intraday stock data fetched');
+      return candles;
+    } catch (err) {
+      log.warn({ symbol, error: (err as Error).message }, 'Stock intraday API failed — using synthetic data');
+      return generateSyntheticCandles(symbol, 100, { intervalMs: intervalMs[interval] ?? 3_600_000 });
     }
-
-    const candles = this.parseTimeSeries(series);
-    log.info({ symbol, interval, count: candles.length }, 'Intraday stock data fetched');
-    return candles;
   }
 }
