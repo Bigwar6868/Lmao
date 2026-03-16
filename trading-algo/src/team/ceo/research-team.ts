@@ -9,6 +9,7 @@ import type {
   RequestPayload,
 } from '../../shared/agent-types.js';
 import type { AssetInfo, Timeframe, MarketData, MacroEnvironment, Signal } from '../../shared/types.js';
+import type { AgentBrain, BrainContext } from '../../shared/agent-brain.js';
 import type { AgentNetwork } from '../agent-network/network.js';
 import { MarketAnalyst } from '../market-analyst/index.js';
 import { MacroEconomist } from '../macro-economist/index.js';
@@ -150,6 +151,57 @@ export class ResearchTeam extends TeamBase {
    */
   async getGeopoliticalReport() {
     return this.macroEconomist.getGeopoliticalReport();
+  }
+
+  // ----------------------------------------------------------------
+  // Brain Context & Idle Exploration
+  // ----------------------------------------------------------------
+
+  private latestMarketData?: Map<string, MarketData>;
+  private latestSignals?: Signal[];
+  private latestMacro?: MacroEnvironment;
+
+  /** Store context from the last cycle for brain/loop usage */
+  updateBrainContext(marketData: Map<string, MarketData>, signals: Signal[], macro?: MacroEnvironment): void {
+    this.latestMarketData = marketData;
+    this.latestSignals = signals;
+    this.latestMacro = macro;
+  }
+
+  protected override getBrainContext(): BrainContext {
+    return {
+      mission: this.getMission(),
+      prompt: this.currentPrompt,
+      marketData: this.latestMarketData,
+      signals: this.latestSignals,
+      macro: this.latestMacro,
+    };
+  }
+
+  /** When idle, explore data sources and look for regime shifts */
+  protected override async handleIdleExplore(brain: AgentBrain, ctx: BrainContext): Promise<void> {
+    // Think about what data to explore
+    const thought = brain.think('What data should I explore proactively?', ctx);
+
+    // Check for regime transitions
+    if (ctx.marketData?.size) {
+      const regime = this.detectRegime(ctx.marketData, ctx.macro);
+      if (regime && regime.confidence > 0.7) {
+        await this.reportToCeo('analysis', `Regime detection: ${regime.regime} (${(regime.confidence * 100).toFixed(0)}% confidence)`, {
+          regime: regime.regime,
+          confidence: regime.confidence,
+          recommendedStrategies: regime.recommendedStrategies,
+        });
+      }
+    }
+
+    // Check macro conditions proactively
+    if (this.isHighImpactPeriod()) {
+      await this.startDiscussion(
+        'high-impact-event',
+        'Upcoming high-impact event detected — all teams should be cautious',
+      );
+    }
   }
 
   // ----------------------------------------------------------------

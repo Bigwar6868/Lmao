@@ -1,5 +1,10 @@
 // ============================================================
 // TeamBase — base class for all teams
+//
+// Every team now has:
+//   - A Brain (structured reasoning, no API)
+//   - A Loop (autonomous 24/7 lifecycle with idle states)
+//   - Visible feedback of all thinking and actions
 // ============================================================
 
 import type {
@@ -20,6 +25,9 @@ import type {
 } from '../../shared/agent-types.js';
 import { generateId } from '../../shared/utils.js';
 import { createModuleLogger } from '../../shared/logger.js';
+import { AgentBrain, type BrainContext, type BrainRole } from '../../shared/agent-brain.js';
+import { AgentLoop, type AgentLoopConfig } from '../../shared/agent-loop.js';
+import { createFeedbackHandler, printThinking } from '../../shared/live-feed.js';
 import type { AgentNetwork } from '../agent-network/network.js';
 
 /**
@@ -42,6 +50,10 @@ export abstract class TeamBase {
   protected currentPrompt: TeamPrompt | null = null;
   protected log;
 
+  // Brain & Loop — every team has autonomous thinking and lifecycle
+  readonly brain: AgentBrain;
+  readonly loop: AgentLoop;
+
   constructor(opts: {
     teamId: TeamId;
     teamName: string;
@@ -54,6 +66,23 @@ export abstract class TeamBase {
     this.ceoId = opts.ceoId;
     this.leadId = generateId();
     this.log = createModuleLogger(`team:${opts.teamId}`);
+
+    // Brain — structured reasoning engine (no API calls)
+    const brainRole = this.getBrainRole();
+    this.brain = new AgentBrain(this.leadId, brainRole, opts.teamName);
+
+    // Loop — autonomous 24/7 event-driven lifecycle
+    this.loop = new AgentLoop(
+      this.leadId,
+      opts.teamName,
+      opts.teamId,
+      this.brain,
+      this.getLoopConfig(),
+    );
+    this.loop.setFeedback(createFeedbackHandler());
+    this.loop.setContextProvider(() => this.getBrainContext());
+    this.loop.onMessage(async (msg) => this.handleLoopMessage(msg));
+    this.loop.onExplore(async (brain, ctx) => this.handleIdleExplore(brain, ctx));
 
     // Register team lead on network
     this.network.register(this.leadId);
@@ -71,7 +100,77 @@ export abstract class TeamBase {
     // Listen for requests from other teams
     this.network.on(this.leadId, 'request', (msg) => this.onRequest(msg));
 
-    this.log.info({ leadId: this.leadId, team: this.teamId }, 'Team initialized');
+    this.log.info({ leadId: this.leadId, team: this.teamId }, 'Team initialized with brain + loop');
+  }
+
+  /** Brain role for this team — subclasses can override */
+  protected getBrainRole(): BrainRole {
+    const roleMap: Record<TeamId, BrainRole> = {
+      ceo: 'ceo',
+      trading: 'trader',
+      research: 'researcher',
+      risk: 'risk-manager',
+      evolution: 'evolutionist',
+      ops: 'ops',
+    };
+    return roleMap[this.teamId] ?? 'ops';
+  }
+
+  /** Loop config — subclasses can override for custom timing */
+  protected getLoopConfig(): Partial<AgentLoopConfig> {
+    return {
+      tickIntervalMs: 2_000,
+      idleCooldownMs: 30_000,
+      exploreProbability: 0.2,
+    };
+  }
+
+  /** Provide current context to the brain for reasoning */
+  protected getBrainContext(): BrainContext {
+    return {
+      mission: this.getMission(),
+      prompt: this.currentPrompt,
+    };
+  }
+
+  /** Handle messages routed through the loop */
+  protected async handleLoopMessage(msg: AgentMessage): Promise<void> {
+    // Default: delegate to existing message handlers
+    switch (msg.type) {
+      case 'directive': this.onDirective(msg); break;
+      case 'approval': this.onApproval(msg); break;
+      case 'veto': this.onVeto(msg); break;
+      case 'discuss': this.onDiscuss(msg); break;
+      case 'question': this.onQuestion(msg); break;
+      case 'answer': this.onAnswer(msg); break;
+      case 'request': this.onRequest(msg); break;
+    }
+  }
+
+  /** What to do when idle — subclasses override for proactive exploration */
+  protected async handleIdleExplore(_brain: AgentBrain, _ctx: BrainContext): Promise<void> {
+    // Default: no-op. Subclasses implement proactive data exploration.
+  }
+
+  /**
+   * Think about something and show it in the live feed.
+   * Available to all teams for visible reasoning.
+   */
+  protected think(question: string, extraContext?: Partial<BrainContext>) {
+    const ctx = { ...this.getBrainContext(), ...extraContext };
+    const chain = this.brain.think(question, ctx);
+    printThinking(this.teamName, chain);
+    return chain;
+  }
+
+  /** Start the autonomous loop */
+  startLoop(): void {
+    this.loop.start();
+  }
+
+  /** Stop the autonomous loop */
+  stopLoop(): void {
+    this.loop.stop();
   }
 
   // ----------------------------------------------------------------

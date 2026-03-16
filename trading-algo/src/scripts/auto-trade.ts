@@ -95,6 +95,11 @@ async function main() {
         }
       }
 
+      // Agent status every 25 cycles
+      if (cycleCount % 25 === 0) {
+        system.printAgentStatus();
+      }
+
       // Periodic diagnostics every 100 cycles
       if (cycleCount % 100 === 0) {
         log.info({ cycle: cycleCount }, 'Running periodic diagnostics');

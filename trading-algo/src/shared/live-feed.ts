@@ -23,6 +23,8 @@ import type {
   AnswerPayload,
   AlertPayload,
 } from './agent-types.js';
+import type { ThoughtChain } from './agent-brain.js';
+import type { AgentState, AgentFeedbackHandler } from './agent-loop.js';
 import type { AgentNetwork } from '../team/agent-network/network.js';
 
 // ANSI color codes for terminal
@@ -244,4 +246,144 @@ export function printSeparator(label?: string): void {
   } else {
     console.log(`${C.dim}${'─'.repeat(60)}${C.reset}`);
   }
+}
+
+// ============================================================
+// Agent Feedback — renders brain thinking, state changes, actions
+// ============================================================
+
+// Additional ANSI codes for thinking display
+const T = {
+  thought: '\x1b[38;5;141m',  // light purple
+  step: '\x1b[38;5;245m',     // gray
+  explore: '\x1b[38;5;220m',  // gold
+  idle: '\x1b[38;5;240m',     // dark gray
+  state: '\x1b[38;5;75m',     // light blue
+  action: '\x1b[38;5;114m',   // light green
+  error: '\x1b[38;5;196m',    // bright red
+};
+
+/** State emoji indicators */
+const stateIcon: Record<AgentState, string> = {
+  running: '>>',
+  thinking: '??',
+  idle: '..',
+  exploring: '~~',
+  sleeping: 'zz',
+  stopped: 'XX',
+};
+
+/**
+ * Format a thought chain for display.
+ * Shows each reasoning step with observations and conclusions.
+ */
+function formatThought(name: string, chain: ThoughtChain): string {
+  const color = nameColor(name);
+  const lines: string[] = [];
+
+  lines.push(
+    `${ts()} ${T.thought}[THINKING]${C.reset} ${color}${C.bold}${name}${C.reset} ` +
+    `${C.dim}(${chain.role})${C.reset}: "${chain.question}" ${C.dim}[${chain.durationMs}ms]${C.reset}`,
+  );
+
+  for (const step of chain.steps) {
+    lines.push(
+      `${' '.repeat(10)}${T.step}├─ ${step.step}${C.reset}`,
+    );
+    lines.push(
+      `${' '.repeat(10)}${T.step}│  ${C.dim}Observed: ${step.observation}${C.reset}`,
+    );
+    const confBar = '█'.repeat(Math.round(step.confidence * 10)) + '░'.repeat(10 - Math.round(step.confidence * 10));
+    lines.push(
+      `${' '.repeat(10)}${T.step}│  → ${step.conclusion} ${C.dim}[${confBar} ${(step.confidence * 100).toFixed(0)}%]${C.reset}`,
+    );
+  }
+
+  lines.push(
+    `${' '.repeat(10)}${T.thought}└─ Decision: ${C.bold}${chain.decision}${C.reset} ` +
+    `${C.dim}(${(chain.confidence * 100).toFixed(0)}% confident)${C.reset}`,
+  );
+
+  return lines.join('\n');
+}
+
+/**
+ * Create a feedback handler that renders agent activity to the console.
+ * Plug this into an AgentLoop to see everything the agent does.
+ */
+export function createFeedbackHandler(): AgentFeedbackHandler {
+  return {
+    onStateChange(agentId: AgentId, name: string, from: AgentState, to: AgentState): void {
+      const color = nameColor(name);
+      const icon = stateIcon[to];
+      // Only show meaningful transitions (skip idle→running→idle noise)
+      if (from === 'idle' && to === 'running') return; // too noisy
+      if (from === 'running' && to === 'idle') {
+        console.log(`${ts()} ${T.idle}[${icon}]${C.reset} ${color}${name}${C.reset} ${C.dim}went idle${C.reset}`);
+        return;
+      }
+      console.log(
+        `${ts()} ${T.state}[${icon}]${C.reset} ${color}${C.bold}${name}${C.reset} ` +
+        `${C.dim}${from}${C.reset} → ${C.bold}${to}${C.reset}`,
+      );
+    },
+
+    onThinking(agentId: AgentId, name: string, chain: ThoughtChain): void {
+      console.log(formatThought(name, chain));
+    },
+
+    onAction(agentId: AgentId, name: string, action: string, detail?: string): void {
+      const color = nameColor(name);
+      const actionMap: Record<string, string> = {
+        message: 'MSG',
+        task: 'TASK',
+        explore: 'EXPLORE',
+        sleep: 'SLEEP',
+        wake: 'WAKE',
+      };
+      const tag = actionMap[action] ?? action.toUpperCase();
+      const tagColor = action === 'explore' ? T.explore : action === 'sleep' ? T.idle : T.action;
+      console.log(
+        `${ts()} ${tagColor}[${tag}]${C.reset} ${color}${name}${C.reset}` +
+        (detail ? `: ${detail}` : ''),
+      );
+    },
+
+    onIdle(agentId: AgentId, name: string): void {
+      // Handled in onStateChange
+    },
+
+    onError(agentId: AgentId, name: string, error: string): void {
+      const color = nameColor(name);
+      console.log(`${ts()} ${T.error}[ERROR]${C.reset} ${color}${C.bold}${name}${C.reset}: ${error}`);
+    },
+  };
+}
+
+/**
+ * Print a standalone thinking summary (for agents without a loop).
+ */
+export function printThinking(name: string, chain: ThoughtChain): void {
+  console.log(formatThought(name, chain));
+}
+
+/**
+ * Print agent status table (for diagnostics).
+ */
+export function printAgentStatusTable(
+  agents: Array<{ name: string; state: AgentState; ticks: number; processed: number; queueSize: number; idleMs: number }>,
+): void {
+  console.log(`\n${C.dim}${'─'.repeat(20)} AGENT STATUS ${'─'.repeat(20)}${C.reset}`);
+  console.log(
+    `${C.dim}${'Agent'.padEnd(25)} ${'State'.padEnd(12)} ${'Ticks'.padStart(8)} ${'Processed'.padStart(10)} ${'Queue'.padStart(6)} ${'Idle'.padStart(8)}${C.reset}`,
+  );
+  for (const a of agents) {
+    const color = nameColor(a.name);
+    const icon = stateIcon[a.state];
+    const idle = a.idleMs > 0 ? `${(a.idleMs / 1000).toFixed(0)}s` : '-';
+    console.log(
+      `${color}${a.name.padEnd(25)}${C.reset} ${icon} ${a.state.padEnd(10)} ${String(a.ticks).padStart(8)} ${String(a.processed).padStart(10)} ${String(a.queueSize).padStart(6)} ${idle.padStart(8)}`,
+    );
+  }
+  console.log(`${C.dim}${'─'.repeat(60)}${C.reset}\n`);
 }

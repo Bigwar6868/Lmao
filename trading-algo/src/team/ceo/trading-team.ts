@@ -12,6 +12,7 @@ import type {
 import type { AssetInfo, Signal, MarketData, MacroEnvironment, Candle, Position } from '../../shared/types.js';
 import { withTimeout } from '../../shared/utils.js';
 import { config } from '../../config/index.js';
+import type { AgentBrain, BrainContext } from '../../shared/agent-brain.js';
 import type { AgentNetwork } from '../agent-network/network.js';
 import type { TradingAgent } from '../agent-network/trading-agent.js';
 import { ConsensusEngine } from '../agent-network/consensus.js';
@@ -422,6 +423,71 @@ export class TradingTeam extends TeamBase {
       reason,
       data: { assets },
     } satisfies RequestPayload);
+  }
+
+  // ----------------------------------------------------------------
+  // Brain Context — provides data for autonomous thinking
+  // ----------------------------------------------------------------
+
+  /** Latest market data — updated each cycle for brain access */
+  private latestMarketData?: Map<string, MarketData>;
+  private latestSignals?: Signal[];
+  private latestMacro?: MacroEnvironment;
+
+  /** Store context from the last cycle for brain/loop usage */
+  updateBrainContext(marketData: Map<string, MarketData>, signals: Signal[], macro?: MacroEnvironment): void {
+    this.latestMarketData = marketData;
+    this.latestSignals = signals;
+    this.latestMacro = macro;
+  }
+
+  protected override getBrainContext(): BrainContext {
+    const portfolio = this.executor.getPortfolio();
+    const closedPositions = portfolio.positions.filter(p => p.status === 'closed');
+    const wins = closedPositions.filter(p => p.realizedPnl > 0).length;
+    return {
+      mission: this.getMission(),
+      prompt: this.currentPrompt,
+      marketData: this.latestMarketData,
+      signals: this.latestSignals,
+      macro: this.latestMacro,
+      portfolio: {
+        capital: portfolio.capital,
+        totalPnl: portfolio.totalPnl,
+        openPositions: portfolio.positions.filter(p => p.status === 'open').length,
+        winRate: closedPositions.length > 0 ? wins / closedPositions.length : 0,
+      },
+    };
+  }
+
+  /** When idle, look for patterns and cross-strategy divergences */
+  protected override async handleIdleExplore(brain: AgentBrain, ctx: BrainContext): Promise<void> {
+    // Think about what to explore
+    const thought = brain.think('Any patterns or divergences worth investigating?', ctx);
+
+    // If we have data, look for cross-strategy agreement
+    if (ctx.signals?.length) {
+      const byAsset = new Map<string, Signal[]>();
+      for (const sig of ctx.signals) {
+        if (sig.action === 'HOLD') continue;
+        const list = byAsset.get(sig.asset.symbol) ?? [];
+        list.push(sig);
+        byAsset.set(sig.asset.symbol, list);
+      }
+
+      for (const [symbol, sigs] of byAsset) {
+        if (sigs.length >= 3) {
+          const allBuy = sigs.every(s => s.action === 'BUY');
+          const allSell = sigs.every(s => s.action === 'SELL');
+          if (allBuy || allSell) {
+            await this.startDiscussion(
+              'cross-strategy-convergence',
+              `${sigs.length} strategies agree on ${allBuy ? 'BUY' : 'SELL'} ${symbol} — high conviction opportunity`,
+            );
+          }
+        }
+      }
+    }
   }
 
   // ----------------------------------------------------------------

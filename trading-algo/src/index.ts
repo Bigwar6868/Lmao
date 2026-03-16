@@ -15,7 +15,7 @@ import { OpsTeam } from './team/ceo/ops-team.js';
 import { DiagnosticsEngine } from './team/diagnostics/index.js';
 import { eventBus } from './shared/events.js';
 import { createModuleLogger } from './shared/logger.js';
-import { attachLiveFeed, registerAgentName, printSystemEvent, printSeparator } from './shared/live-feed.js';
+import { attachLiveFeed, registerAgentName, printSystemEvent, printSeparator, printAgentStatusTable } from './shared/live-feed.js';
 import type { AssetInfo, Timeframe, Signal, MarketData, Candle } from './shared/types.js';
 import type { AgentId } from './shared/agent-types.js';
 
@@ -142,13 +142,55 @@ export class TradingSystem {
       log.info({ improvement: event.data }, 'Strategy evolved!');
     });
 
+    // 9. Start autonomous loops for all teams — 24/7 independent lifecycle
+    this.startAllLoops();
+
     log.info({
       mode: config.tradingMode,
       capital: config.initialCapital,
       assets: allAssets.length,
       agents: this.agents.size,
       teams: this.ceo.getAllTeams().length,
-    }, 'CEO-driven trading system ready');
+    }, 'CEO-driven trading system ready (all team loops started)');
+  }
+
+  /** Start autonomous loops for all teams */
+  private startAllLoops(): void {
+    this.tradingTeam.startLoop();
+    this.researchTeam.startLoop();
+    this.riskTeam.startLoop();
+    this.evolutionTeam.startLoop();
+    this.opsTeam.startLoop();
+    printSystemEvent('All team loops started — agents running 24/7');
+  }
+
+  /** Stop all team loops */
+  private stopAllLoops(): void {
+    this.tradingTeam.stopLoop();
+    this.researchTeam.stopLoop();
+    this.riskTeam.stopLoop();
+    this.evolutionTeam.stopLoop();
+    this.opsTeam.stopLoop();
+    printSystemEvent('All team loops stopped');
+  }
+
+  /** Print status of all agent loops */
+  printAgentStatus(): void {
+    const teams = [
+      this.tradingTeam,
+      this.researchTeam,
+      this.riskTeam,
+      this.evolutionTeam,
+      this.opsTeam,
+    ];
+    printAgentStatusTable(teams.map(t => ({
+      name: t.teamName,
+      state: t.loop.getState(),
+      ticks: t.loop.getTickCount(),
+      processed: t.loop.getProcessedCount(),
+      queueSize: t.loop.getQueueSize(),
+      idleMs: t.loop.getIdleDuration(),
+    })));
   }
 
   /**
@@ -283,6 +325,15 @@ export class TradingSystem {
 
     // 2. Research team generates signals
     const allSignals = await this.researchTeam.analyzeAll(marketDataMap, macro);
+
+    // 2b. Feed brain context to teams — they use this for autonomous thinking
+    this.researchTeam.updateBrainContext(marketDataMap, allSignals, macro);
+    this.tradingTeam.updateBrainContext(marketDataMap, allSignals, macro);
+
+    // 2c. Research team thinks about what it found
+    this.researchTeam.brain.think('What do the current signals tell us about market conditions?', {
+      marketData: marketDataMap, signals: allSignals, macro,
+    });
 
     // 3. Trading Team autonomously selects which assets to trade
     printSystemEvent(`Research complete: ${marketDataMap.size} assets scanned, ${allSignals.length} signals found`);
@@ -529,6 +580,7 @@ export class TradingSystem {
   getOpsTeam(): OpsTeam { return this.opsTeam; }
 
   async shutdown(): Promise<void> {
+    this.stopAllLoops();
     await this.evolutionTeam.save();
     log.info('System state saved. Shutting down.');
   }

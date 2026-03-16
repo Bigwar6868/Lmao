@@ -71,4 +71,9 @@ export const config = {
   autoTradeCycleMs: Number(process.env.AUTO_TRADE_CYCLE_MS ?? 60_000),       // 1 min between cycles
   autoTradeReviewInterval: Number(process.env.AUTO_TRADE_REVIEW_INTERVAL ?? 10), // review every N cycles
   autoTradeEvolveInterval: Number(process.env.AUTO_TRADE_EVOLVE_INTERVAL ?? 50), // evolve every N cycles
+
+  // Agent Loop (autonomous 24/7 agents)
+  agentLoopTickMs: Number(process.env.AGENT_LOOP_TICK_MS ?? 2_000),         // loop tick interval
+  agentIdleCooldownMs: Number(process.env.AGENT_IDLE_COOLDOWN_MS ?? 30_000), // min between idle explorations
+  agentExploreProbability: Number(process.env.AGENT_EXPLORE_PROB ?? 0.2),    // chance of exploring when idle
 } as const;
