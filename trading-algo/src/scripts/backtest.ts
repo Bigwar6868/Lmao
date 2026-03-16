@@ -1,30 +1,44 @@
 import { TradingOrchestrator } from '../index.js';
-import { cryptoAssets, stockAssets } from '../config/assets.js';
-import type { Timeframe } from '../shared/types.js';
+import { allAssets, cryptoAssets, stockAssets, forexAssets } from '../config/assets.js';
+import type { AssetInfo, Timeframe } from '../shared/types.js';
 
 async function main() {
   const orchestrator = new TradingOrchestrator();
   await orchestrator.initialize();
 
   const timeframe: Timeframe = (process.argv[2] as Timeframe) || '1h';
-  const assetSymbol = process.argv[3];
+  const assetFilter = process.argv[3];
 
-  console.log(`\n=== Running Backtests (${timeframe}) ===\n`);
-
-  // If specific asset given, backtest only that
-  if (assetSymbol) {
-    const asset = [...cryptoAssets, ...stockAssets].find((a) => a.symbol === assetSymbol);
+  // If specific asset symbol given, backtest only that
+  if (assetFilter && !['crypto', 'stocks', 'forex', 'all'].includes(assetFilter)) {
+    const asset = allAssets.find((a) => a.symbol === assetFilter);
     if (!asset) {
-      console.error(`Asset not found: ${assetSymbol}`);
+      console.error(`Asset not found: ${assetFilter}`);
+      console.error(`Available: ${allAssets.map((a) => a.symbol).join(', ')}`);
       process.exit(1);
     }
+    console.log(`\n=== Backtesting ${asset.symbol} (${timeframe}) ===\n`);
     await orchestrator.runBacktest(asset, timeframe);
-  } else {
-    // Backtest top crypto assets
-    for (const asset of cryptoAssets.slice(0, 3)) {
-      console.log(`\n--- Backtesting ${asset.symbol} ---`);
-      await orchestrator.runBacktest(asset, timeframe);
-    }
+    await orchestrator.shutdown();
+    return;
+  }
+
+  // Select asset class
+  let assets: AssetInfo[];
+  switch (assetFilter) {
+    case 'crypto': assets = cryptoAssets; break;
+    case 'stocks': assets = stockAssets; break;
+    case 'forex': assets = forexAssets; break;
+    default: assets = allAssets;
+  }
+
+  console.log(`\n=== Running Backtests (${timeframe}) ===`);
+  console.log(`Assets: ${assets.length} (${assetFilter || 'all'})\n`);
+
+  // Backtest ALL assets
+  for (const asset of assets) {
+    console.log(`\n--- Backtesting ${asset.symbol} (${asset.assetClass}) ---`);
+    await orchestrator.runBacktest(asset, timeframe);
   }
 
   await orchestrator.shutdown();

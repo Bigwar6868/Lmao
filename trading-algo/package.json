@@ -14,6 +14,7 @@
     "analyze": "tsx src/scripts/analyze.ts",
     "evolve": "tsx src/scripts/evolve.ts",
     "diagnose": "tsx src/scripts/diagnose.ts",
+    "scan": "tsx src/scripts/scan.ts",
     "seed-data": "tsx src/scripts/seed-data.ts",
     "test": "vitest run",
     "test:watch": "vitest"

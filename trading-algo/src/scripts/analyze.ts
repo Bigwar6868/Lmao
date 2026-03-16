@@ -7,7 +7,7 @@ async function main() {
   await orchestrator.initialize();
 
   const timeframe: Timeframe = (process.argv[2] as Timeframe) || '1h';
-  const assetClass = process.argv[3] || 'crypto';
+  const assetClass = process.argv[3] || 'all';
 
   let assets: AssetInfo[];
   switch (assetClass) {
@@ -20,7 +20,7 @@ async function main() {
 
   console.log(`\n=== Market Analysis (${timeframe}, ${assetClass}) ===\n`);
 
-  const signals = await orchestrator.analyzeCycle(assets, timeframe);
+  const { signals } = await orchestrator.analyzeCycle(assets, timeframe);
 
   // Display results
   const buySignals = signals.filter((s) => s.action === 'BUY');

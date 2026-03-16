@@ -11,6 +11,7 @@ import { SelfImprover } from './team/self-improver/index.js';
 import { RegimeDetector } from './team/regime-detector/index.js';
 import { ScenarioSimulator } from './team/scenario-simulator/index.js';
 import { DiagnosticsEngine } from './team/diagnostics/index.js';
+import { OpportunityScanner } from './team/opportunity-scanner/index.js';
 import { eventBus } from './shared/events.js';
 import { createModuleLogger } from './shared/logger.js';
 import type { AssetInfo, Timeframe, Signal, MarketData, Candle } from './shared/types.js';
@@ -19,6 +20,7 @@ const log = createModuleLogger('orchestrator');
 
 /**
  * Trading System Orchestrator — coordinates all team members.
+ * Scans ALL asset classes, ranks opportunities, and builds its own portfolio.
  */
 export class TradingOrchestrator {
   private marketAnalyst = new MarketAnalyst();
@@ -32,6 +34,7 @@ export class TradingOrchestrator {
   private regimeDetector = new RegimeDetector();
   private scenarioSimulator = new ScenarioSimulator();
   private diagnosticsEngine = new DiagnosticsEngine();
+  private scanner = new OpportunityScanner();
 
   async initialize(): Promise<void> {
     log.info('Initializing trading system...');
@@ -55,18 +58,19 @@ export class TradingOrchestrator {
 
   /**
    * Run full analysis cycle on all assets.
+   * Returns signals AND the market data map for downstream use.
    */
   async analyzeCycle(
-    assets: AssetInfo[] = cryptoAssets,
+    assets: AssetInfo[] = allAssets,
     timeframe: Timeframe = '1h'
-  ): Promise<Signal[]> {
+  ): Promise<{ signals: Signal[]; marketDataMap: Map<string, MarketData> }> {
     log.info({ assets: assets.length, timeframe }, 'Starting analysis cycle');
 
     // 1. Fetch macro environment
     const macro = await this.macroEconomist.getEnvironment();
     log.info({ bias: macro.bias, risk: macro.riskLevel }, 'Macro environment assessed');
 
-    // 2. Fetch market data for all assets
+    // 2. Fetch market data for ALL assets across ALL classes
     const marketDataMap = new Map<string, MarketData>();
     for (const asset of assets) {
       try {
@@ -79,7 +83,7 @@ export class TradingOrchestrator {
       }
     }
 
-    // 3. Run technical analysis on each asset
+    // 3. Run technical analysis on EVERY asset
     const allSignals: Signal[] = [];
     for (const [symbol, data] of marketDataMap) {
       const signals = await this.strategist.analyzeAll(data, macro);
@@ -87,25 +91,30 @@ export class TradingOrchestrator {
     }
 
     log.info({
+      assetsAnalyzed: marketDataMap.size,
       totalSignals: allSignals.length,
       buySignals: allSignals.filter((s) => s.action === 'BUY').length,
       sellSignals: allSignals.filter((s) => s.action === 'SELL').length,
     }, 'Analysis cycle complete');
 
-    return allSignals;
+    return { signals: allSignals, marketDataMap };
   }
 
   /**
-   * Run paper trading cycle: analyze → risk check → execute.
+   * Smart trading cycle: scan ALL assets → rank opportunities →
+   * select best portfolio → execute trades.
+   * The agent autonomously chooses which assets to trade.
    */
   async tradingCycle(
-    assets: AssetInfo[] = cryptoAssets,
+    assets: AssetInfo[] = allAssets,
     timeframe: Timeframe = '1h'
   ): Promise<void> {
-    const signals = await this.analyzeCycle(assets, timeframe);
+    // 1. Analyze ALL assets across crypto, stocks, forex
+    const { signals, marketDataMap } = await this.analyzeCycle(assets, timeframe);
     const portfolio = this.executor.getPortfolio();
+    const macro = await this.macroEconomist.getEnvironment();
 
-    // Check stops first
+    // 2. Update prices and check stops on existing positions
     const prices = new Map<string, number>();
     for (const signal of signals) {
       prices.set(signal.asset.symbol, signal.price);
@@ -113,22 +122,60 @@ export class TradingOrchestrator {
     await this.executor.checkStops(prices);
     this.executor.updatePrices(prices);
 
-    // Execute actionable signals
-    const actionableSignals = signals.filter((s) => s.action !== 'HOLD' && s.confidence > 0.6);
+    // 3. Scan and rank all opportunities
+    const opportunities = this.scanner.scan(signals, marketDataMap, macro);
 
-    for (const signal of actionableSignals) {
-      // Get candles for ATR calculation
-      const candles = (await this.marketAnalyst.fetchMarketData(signal.asset, timeframe)).candles;
+    // 4. Let the agent select its own portfolio
+    const maxNewPositions = Math.max(1, 10 - portfolio.positions.length);
+    const selected = this.scanner.selectPortfolio(opportunities, {
+      maxPositions: maxNewPositions,
+      minScore: 35,
+      minConfidence: 0.55,
+      diversify: true,
+    });
 
-      const risk = this.riskManager.assessRisk(signal, portfolio, candles);
+    // 5. Print opportunity report
+    if (opportunities.length > 0) {
+      console.log(OpportunityScanner.formatReport(opportunities));
+    }
+
+    // 6. Execute trades on selected opportunities
+    let executed = 0;
+    let rejected = 0;
+
+    for (const opp of selected) {
+      // Use the highest-confidence signal from this opportunity
+      const bestSignal = opp.signals.sort((a, b) => b.confidence - a.confidence)[0];
+      const candles = marketDataMap.get(opp.asset.symbol)?.candles ?? [];
+
+      if (candles.length < 20) continue;
+
+      const risk = this.riskManager.assessRisk(bestSignal, portfolio, candles, macro);
       if (risk.approved) {
-        await this.executor.execute(signal, risk);
+        const result = await this.executor.execute(bestSignal, risk);
+        if (result.success) {
+          executed++;
+          log.info({
+            symbol: opp.asset.symbol,
+            action: opp.action,
+            score: opp.score,
+            strategy: bestSignal.strategy,
+          }, 'Trade executed from opportunity');
+        }
       } else {
-        log.debug({ symbol: signal.asset.symbol, reason: risk.reason }, 'Trade rejected');
+        rejected++;
+        log.debug({ symbol: opp.asset.symbol, reason: risk.reason }, 'Opportunity rejected by risk');
       }
     }
 
-    log.info(this.executor.getSummary());
+    // 7. Summary
+    console.log(`\n=== Trading Cycle Summary ===`);
+    console.log(`Assets scanned: ${marketDataMap.size} (crypto: ${assets.filter(a => a.assetClass === 'crypto').length}, stocks: ${assets.filter(a => a.assetClass === 'stock').length}, forex: ${assets.filter(a => a.assetClass === 'forex').length})`);
+    console.log(`Signals generated: ${signals.length}`);
+    console.log(`Opportunities found: ${opportunities.length}`);
+    console.log(`Selected for trading: ${selected.length}`);
+    console.log(`Trades executed: ${executed}, rejected: ${rejected}`);
+    console.log(this.executor.getSummary());
   }
 
   /**
@@ -182,7 +229,7 @@ export class TradingOrchestrator {
    * Run full diagnostic scan — detect anomalies, risks, problems.
    */
   async runDiagnostics(
-    assets: AssetInfo[] = cryptoAssets,
+    assets: AssetInfo[] = allAssets,
     timeframe: Timeframe = '1h'
   ) {
     log.info('Running full diagnostic scan...');
@@ -267,13 +314,14 @@ async function main() {
   console.log('\n=== Trading Algorithm System ===');
   console.log(`Mode: ${config.tradingMode}`);
   console.log(`Capital: $${config.initialCapital}`);
-  console.log(`Assets: ${allAssets.length} total`);
+  console.log(`Assets: ${allAssets.length} total (8 crypto, 8 stocks, 6 forex)`);
   console.log('\nRun scripts:');
-  console.log('  npm run backtest     — Run backtests');
-  console.log('  npm run paper-trade  — Start paper trading');
-  console.log('  npm run analyze      — Analyze markets');
-  console.log('  npm run evolve       — Evolve strategies');
+  console.log('  npm run backtest     — Backtest ALL assets');
+  console.log('  npm run paper-trade  — Paper trade ALL assets (agent selects portfolio)');
+  console.log('  npm run analyze      — Analyze ALL markets');
+  console.log('  npm run evolve       — Evolve strategies across ALL assets');
   console.log('  npm run diagnose     — Run diagnostic scan');
+  console.log('  npm run scan         — Scan for best opportunities');
   console.log('');
 }
 
