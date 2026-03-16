@@ -8,9 +8,12 @@ import { RiskManager } from './team/risk-manager/index.js';
 import { Backtester } from './team/backtester/index.js';
 import { Executor } from './team/executor/index.js';
 import { SelfImprover } from './team/self-improver/index.js';
+import { RegimeDetector } from './team/regime-detector/index.js';
+import { ScenarioSimulator } from './team/scenario-simulator/index.js';
+import { DiagnosticsEngine } from './team/diagnostics/index.js';
 import { eventBus } from './shared/events.js';
 import { createModuleLogger } from './shared/logger.js';
-import type { AssetInfo, Timeframe, Signal, MarketData } from './shared/types.js';
+import type { AssetInfo, Timeframe, Signal, MarketData, Candle } from './shared/types.js';
 
 const log = createModuleLogger('orchestrator');
 
@@ -26,6 +29,9 @@ export class TradingOrchestrator {
   private backtester = new Backtester();
   private executor = new Executor();
   private selfImprover = new SelfImprover();
+  private regimeDetector = new RegimeDetector();
+  private scenarioSimulator = new ScenarioSimulator();
+  private diagnosticsEngine = new DiagnosticsEngine();
 
   async initialize(): Promise<void> {
     log.info('Initializing trading system...');
@@ -173,6 +179,71 @@ export class TradingOrchestrator {
   }
 
   /**
+   * Run full diagnostic scan — detect anomalies, risks, problems.
+   */
+  async runDiagnostics(
+    assets: AssetInfo[] = cryptoAssets,
+    timeframe: Timeframe = '1h'
+  ) {
+    log.info('Running full diagnostic scan...');
+
+    // Fetch data
+    const macro = await this.macroEconomist.getEnvironment();
+    const candlesMap = new Map<string, Candle[]>();
+    for (const asset of assets) {
+      try {
+        const data = await this.marketAnalyst.fetchMarketData(asset, timeframe);
+        if (data.candles.length > 0) candlesMap.set(asset.symbol, data.candles);
+      } catch { /* skip */ }
+    }
+
+    // Detect regime for first asset with data
+    const firstCandles = [...candlesMap.values()][0];
+    const regime = firstCandles
+      ? this.regimeDetector.detect(firstCandles, macro)
+      : undefined;
+
+    // Run scenario simulation for first asset
+    const firstAsset = assets[0];
+    const simulation = firstCandles && regime
+      ? this.scenarioSimulator.simulate(firstAsset, firstCandles, regime.regime, macro)
+      : undefined;
+
+    // Run diagnostics
+    const report = this.diagnosticsEngine.scan({
+      candles: candlesMap,
+      portfolio: this.executor.getPortfolio(),
+      regime,
+      simulation,
+      macro,
+    });
+
+    // Print reports
+    if (regime) {
+      console.log(`\n=== Market Regime: ${regime.regime.toUpperCase()} (${(regime.confidence * 100).toFixed(0)}% confidence) ===`);
+      console.log(regime.details);
+      console.log(`Recommended strategies: ${regime.recommendedStrategies.join(', ')}`);
+    }
+
+    if (simulation) {
+      console.log(`\n=== Scenario Simulation: ${firstAsset.symbol} ===`);
+      console.log(`Outlook: ${simulation.overallOutlook.toUpperCase()}`);
+      console.log(`Best case: ${simulation.bestScenario} | Worst case: ${simulation.worstScenario}`);
+      console.log('\nKey Risks:');
+      simulation.keyRisks.forEach((r) => console.log(`  - ${r}`));
+      console.log('\nOpportunities:');
+      simulation.opportunities.forEach((o) => console.log(`  + ${o}`));
+      console.log('\nScenarios:');
+      for (const s of simulation.scenarios) {
+        console.log(`  ${s.name} (${(s.probability * 100).toFixed(0)}%): ${s.expectedReturn > 0 ? '+' : ''}${s.expectedReturn}% expected`);
+      }
+    }
+
+    console.log(DiagnosticsEngine.formatReport(report));
+    return { regime, simulation, report };
+  }
+
+  /**
    * Get portfolio summary.
    */
   getPortfolioSummary(): string {
@@ -202,6 +273,7 @@ async function main() {
   console.log('  npm run paper-trade  — Start paper trading');
   console.log('  npm run analyze      — Analyze markets');
   console.log('  npm run evolve       — Evolve strategies');
+  console.log('  npm run diagnose     — Run diagnostic scan');
   console.log('');
 }
 

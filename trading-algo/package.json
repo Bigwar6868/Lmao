@@ -13,6 +13,7 @@
     "paper-trade": "tsx src/scripts/paper-trade.ts",
     "analyze": "tsx src/scripts/analyze.ts",
     "evolve": "tsx src/scripts/evolve.ts",
+    "diagnose": "tsx src/scripts/diagnose.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },
