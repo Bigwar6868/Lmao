@@ -15,6 +15,7 @@
     "evolve": "tsx src/scripts/evolve.ts",
     "diagnose": "tsx src/scripts/diagnose.ts",
     "scan": "tsx src/scripts/scan.ts",
+    "auto-trade": "tsx src/scripts/auto-trade.ts",
     "seed-data": "tsx src/scripts/seed-data.ts",
     "test": "vitest run",
     "test:watch": "vitest",

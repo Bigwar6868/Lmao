@@ -76,16 +76,19 @@ export class TradingSystem {
     this.ceo.registerTeam(this.evolutionTeam.getConfig());
     this.ceo.registerTeam(this.opsTeam.getConfig());
 
-    // 2. Initialize evolution team (loads saved state)
+    // 2. CEO assigns team prompts — defines each team's mission
+    await this.assignTeamPrompts();
+
+    // 3. Initialize evolution team (loads saved state)
     await this.evolutionTeam.initialize();
 
-    // 3. Get strategies from research team
+    // 4. Get strategies from research team
     const strategyList = this.researchTeam.getStrategies();
     for (const strategy of strategyList) {
       this.strategies.set(strategy.name, strategy);
     }
 
-    // 4. Spawn initial trading agents (2 per strategy for debate)
+    // 5. Spawn initial trading agents (2 per strategy for debate)
     for (const strategy of strategyList) {
       for (let i = 0; i < 2; i++) {
         const agent = new TradingAgent({
@@ -98,7 +101,7 @@ export class TradingSystem {
       }
     }
 
-    // 5. Create spawner for dynamic agent management
+    // 6. Create spawner for dynamic agent management
     this.spawner = new AgentSpawner(
       this.network, this.agents, this.strategies,
       {
@@ -113,11 +116,11 @@ export class TradingSystem {
       },
     );
 
-    // 6. CEO sets initial active assets + strategies
+    // 7. CEO sets available asset universe — Trading Team decides what to actually trade
     this.ceo.setActiveAssets(allAssets);
     this.ceo.setActiveStrategies(strategyList.map(s => s.name));
 
-    // 7. Event listeners
+    // 8. Event listeners
     eventBus.on('signal:generated', (event) => {
       log.debug({ signal: event.data }, 'Signal received');
     });
@@ -132,6 +135,88 @@ export class TradingSystem {
       agents: this.agents.size,
       teams: this.ceo.getAllTeams().length,
     }, 'CEO-driven trading system ready');
+  }
+
+  /**
+   * CEO assigns mission prompts to each team.
+   * This defines what each team should focus on.
+   */
+  private async assignTeamPrompts(): Promise<void> {
+    await this.ceo.setTeamPrompt('trading',
+      'Autonomously decide what to trade and when. Maximize risk-adjusted returns.',
+      [
+        'Select the best assets to trade based on research data and market conditions',
+        'Run debate/consensus among agents before executing trades',
+        'Review own performance periodically and self-adjust',
+        'Request data from Research Team as needed',
+        'Report trading activity and P&L to CEO',
+      ],
+      [
+        'Never exceed risk limits set by Risk Team',
+        'Do not trade during kill switch activation',
+        'Respect governance rules (max exposure, position limits)',
+      ],
+    );
+
+    await this.ceo.setTeamPrompt('research',
+      'Provide comprehensive market intelligence across all data sources.',
+      [
+        'Fetch and cache OHLCV data for all asset classes (crypto, stocks, forex)',
+        'Monitor macro economic indicators (FRED, global central banks)',
+        'Track geopolitical risks (conflicts, sanctions, trade wars, policy changes)',
+        'Analyze sentiment from news and social media',
+        'Detect market regime changes (bull, bear, range, crisis)',
+        'Serve data requests from Trading and Evolution teams',
+      ],
+      [
+        'Do not make trading decisions — only provide data and analysis',
+        'Cache aggressively to avoid rate limits',
+      ],
+      { dataSources: ['FRED', 'CCXT', 'AlphaVantage', 'geopolitics', 'policy', 'globalMacro', 'calendar'] },
+    );
+
+    await this.ceo.setTeamPrompt('risk',
+      'Protect capital. Enforce risk limits and governance rules.',
+      [
+        'Monitor portfolio exposure and concentration',
+        'Enforce daily loss circuit breakers',
+        'Manage kill switch for emergency stops',
+        'Advise CEO on risk adjustments',
+      ],
+      [
+        'Never disable kill switch without CEO approval',
+        'Always err on the side of caution',
+      ],
+    );
+
+    await this.ceo.setTeamPrompt('evolution',
+      'Continuously improve strategy performance through genetic evolution.',
+      [
+        'Backtest all strategies against historical data',
+        'Evolve strategy DNA using genetic algorithm (internal only, no API)',
+        'Detect strategy decay and recommend retirement',
+        'Guard against overfitting with walk-forward validation',
+        'Report improvements to CEO',
+      ],
+      [
+        'No external API calls during evolution — use cached/synthetic data only',
+        'Preserve top performers unchanged (elitism)',
+      ],
+    );
+
+    await this.ceo.setTeamPrompt('ops',
+      'Monitor system health, manage data sources, run diagnostics.',
+      [
+        'Run periodic health diagnostics',
+        'Monitor for anomalies (flash crashes, volume spikes)',
+        'Track data source availability',
+        'Alert CEO on critical system issues',
+        'Detect stuck tasks and request helper agents',
+      ],
+      [],
+    );
+
+    log.info('CEO assigned team prompts to all 5 teams');
   }
 
   // ----------------------------------------------------------------
@@ -176,11 +261,25 @@ export class TradingSystem {
 
     log.info({ cycle, agents: this.agents.size }, 'Starting CEO-driven trading cycle');
 
-    // 1. Research team fetches data
+    // 1. Research team fetches data for the full asset universe
     const macro = await this.researchTeam.getMacroEnvironment();
     const marketDataMap = await this.researchTeam.fetchAllData(assets, timeframe);
 
-    // 2. Update prices + check stops
+    // 2. Research team generates signals
+    const allSignals = await this.researchTeam.analyzeAll(marketDataMap, macro);
+
+    // 3. Trading Team autonomously selects which assets to trade
+    const selectedAssets = this.tradingTeam.selectAssetsToTrade(marketDataMap, allSignals);
+    log.info({ selected: selectedAssets.length, universe: assets.length }, 'Trading Team selected assets');
+
+    // 4. Filter market data to only selected assets
+    const tradingDataMap = new Map<string, MarketData>();
+    for (const asset of selectedAssets) {
+      const data = marketDataMap.get(asset.symbol);
+      if (data) tradingDataMap.set(asset.symbol, data);
+    }
+
+    // 5. Update prices + check stops (on ALL assets we have positions in)
     const prices = new Map<string, number>();
     for (const [, data] of marketDataMap) {
       if (data.candles.length > 0) {
@@ -190,9 +289,9 @@ export class TradingSystem {
     await this.tradingTeam.checkStops(prices);
     this.tradingTeam.updatePrices(prices);
 
-    // 3. Trading team runs cycle (agents analyze, debate, execute)
+    // 6. Trading team runs cycle on selected assets (agents analyze, debate, execute)
     const { approvedSignals, debateSummary, executed, rejected } = await this.tradingTeam.runCycle(
-      marketDataMap, macro,
+      tradingDataMap, macro,
     );
 
     // 4. Print debate summary
@@ -224,7 +323,18 @@ export class TradingSystem {
       this.spawner.evolveUnderperformers();
     }
 
-    // 8. Decay analysis every 15 cycles
+    // 8. Trading team self-review every 10 cycles
+    if (cycle % 10 === 0) {
+      const review = this.tradingTeam.reviewPerformance();
+      console.log(`\n=== Trade Self-Review (Cycle ${cycle}) ===`);
+      console.log(review.summary);
+      if (review.adjustments.length > 0) {
+        console.log('Adjustments:');
+        review.adjustments.forEach(a => console.log(`  - ${a}`));
+      }
+    }
+
+    // 9. Decay analysis every 15 cycles
     if (cycle % 15 === 0) {
       const decayResults = this.evolutionTeam.analyzeDecay();
       const decaying = decayResults.filter(d => d.isDecaying);
@@ -234,9 +344,9 @@ export class TradingSystem {
       }
     }
 
-    // 9. Print summary
+    // 10. Print summary
     console.log(`\n=== Trading Cycle ${cycle} Summary ===`);
-    console.log(`Assets scanned: ${marketDataMap.size}`);
+    console.log(`Assets scanned: ${marketDataMap.size} | Trading Team selected: ${selectedAssets.length}`);
     console.log(`Agent debates: ${debateSummary.length}`);
     console.log(`Consensus approved: ${approvedSignals.length}`);
     console.log(`Trades executed: ${executed}, risk-rejected: ${rejected}`);
@@ -244,7 +354,7 @@ export class TradingSystem {
     console.log(`Spawned: ${spawned.length}, Retired: ${retired.length}`);
     console.log(this.tradingTeam.getPortfolioSummary());
 
-    // 10. CEO dashboard
+    // 11. CEO dashboard
     console.log(this.ceo.formatReport(this.tradingTeam.getPortfolio()));
   }
 

@@ -33,5 +33,38 @@ export interface GeopoliticalRisk {
   score: number;          // 0–100
   level: 'low' | 'medium' | 'high' | 'extreme';
   vixLevel: number;
+  factors: GeopoliticalFactor[];
+  timestamp: number;
+}
+
+/** A specific geopolitical risk factor */
+export interface GeopoliticalFactor {
+  category: 'conflict' | 'sanctions' | 'trade-war' | 'election' | 'policy' | 'energy' | 'pandemic' | 'debt-crisis';
+  region: string;
+  description: string;
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  affectedAssets: string[];      // e.g., ['USD/JPY', 'BTC/USDT', 'oil']
+  marketImpact: 'bullish' | 'bearish' | 'volatile' | 'neutral';
+}
+
+/** Policy change event */
+export interface PolicyChange {
+  country: string;
+  institution: string;           // e.g., 'Federal Reserve', 'ECB', 'PBoC'
+  type: 'monetary' | 'fiscal' | 'regulatory' | 'trade';
+  description: string;
+  impact: 'hawkish' | 'dovish' | 'neutral' | 'restrictive' | 'expansionary';
+  affectedMarkets: string[];     // e.g., ['crypto', 'stocks', 'forex']
+  effectiveDate: string;
+  severity: 'low' | 'medium' | 'high';
+}
+
+/** Global macro data source */
+export interface GlobalMacroSnapshot {
+  region: string;
+  indicators: Record<string, number>;
+  policyStance: 'hawkish' | 'dovish' | 'neutral';
+  growthOutlook: 'expanding' | 'slowing' | 'contracting' | 'recovering';
+  inflationTrend: 'rising' | 'falling' | 'stable' | 'sticky';
   timestamp: number;
 }

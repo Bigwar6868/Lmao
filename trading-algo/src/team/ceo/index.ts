@@ -6,6 +6,7 @@ import type {
   AgentId,
   TeamId,
   TeamConfig,
+  TeamPrompt,
   CEODashboard,
   DirectivePayload,
   DirectiveType,
@@ -30,6 +31,7 @@ export class CEOAgent {
   private pendingRequests: Array<{ id: string; from: AgentId; payload: RequestPayload; receivedAt: number }> = [];
   private directives: DirectivePayload[] = [];
   private discussions = new Map<string, DiscussionThread>();
+  private teamPrompts = new Map<TeamId, TeamPrompt>();
   private cycleCount = 0;
   private paused = false;
 
@@ -78,6 +80,53 @@ export class CEOAgent {
       team.memberIds = team.memberIds.filter(id => id !== agentId);
       log.info({ team: teamId, agentId: agentId.slice(0, 8) }, 'Agent removed from team');
     }
+  }
+
+  // ----------------------------------------------------------------
+  // Team Prompts — CEO defines each team's mission & objectives
+  // ----------------------------------------------------------------
+
+  /**
+   * Assign or update a team's mission prompt.
+   * The team reads this to know what the CEO expects of them.
+   */
+  async setTeamPrompt(
+    teamId: TeamId,
+    mission: string,
+    objectives: string[],
+    constraints: string[] = [],
+    focus?: Record<string, unknown>,
+  ): Promise<void> {
+    const now = Date.now();
+    const existing = this.teamPrompts.get(teamId);
+    const prompt: TeamPrompt = {
+      teamId,
+      mission,
+      objectives,
+      constraints,
+      focus,
+      issuedAt: existing?.issuedAt ?? now,
+      updatedAt: now,
+    };
+    this.teamPrompts.set(teamId, prompt);
+
+    // Send the prompt as a directive to the team
+    await this.issueDirective('set-prompt', teamId, {
+      mission,
+      objectives,
+      constraints,
+      focus,
+    }, `CEO assigned mission: ${mission}`);
+
+    log.info({ teamId, mission, objectives: objectives.length }, 'Team prompt assigned');
+  }
+
+  getTeamPrompt(teamId: TeamId): TeamPrompt | undefined {
+    return this.teamPrompts.get(teamId);
+  }
+
+  getAllPrompts(): TeamPrompt[] {
+    return [...this.teamPrompts.values()];
   }
 
   // ----------------------------------------------------------------
@@ -333,7 +382,11 @@ export class CEOAgent {
     ];
 
     for (const team of dash.teams) {
+      const prompt = this.teamPrompts.get(team.id as TeamId);
       lines.push(`  ${team.name} (${team.id}): ${team.memberIds.length} agents`);
+      if (prompt) {
+        lines.push(`    Mission: ${prompt.mission}`);
+      }
     }
 
     return lines.join('\n');

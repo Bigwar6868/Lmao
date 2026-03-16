@@ -6,6 +6,7 @@ import type {
   AgentId,
   TeamId,
   TeamConfig,
+  TeamPrompt,
   AgentMessage,
   RequestPayload,
   ReportPayload,
@@ -38,6 +39,7 @@ export abstract class TeamBase {
   protected network: AgentNetwork;
   protected ceoId: AgentId;
   protected memberIds: AgentId[] = [];
+  protected currentPrompt: TeamPrompt | null = null;
   protected log;
 
   constructor(opts: {
@@ -190,6 +192,22 @@ export abstract class TeamBase {
 
   protected onDirective(msg: AgentMessage): void {
     const directive = msg.payload as DirectivePayload;
+
+    // Intercept prompt assignments — store before forwarding
+    if (directive.directiveType === 'set-prompt' && directive.targetTeam === this.teamId) {
+      const p = directive.params;
+      this.currentPrompt = {
+        teamId: this.teamId,
+        mission: p.mission as string,
+        objectives: (p.objectives as string[]) ?? [],
+        constraints: (p.constraints as string[]) ?? [],
+        focus: p.focus as Record<string, unknown> | undefined,
+        issuedAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      this.log.info({ mission: this.currentPrompt.mission }, 'Team prompt updated by CEO');
+    }
+
     this.log.info({
       directive: directive.directiveType,
       priority: directive.priority,
@@ -236,6 +254,18 @@ export abstract class TeamBase {
   protected handleApproval(_approval: ApprovalPayload): void { /* override */ }
   protected handleQuestion(_from: AgentId, _payload: QuestionPayload): void { /* override */ }
   protected handleInterTeamRequest(_from: AgentId, _payload: RequestPayload): void { /* override */ }
+
+  // ----------------------------------------------------------------
+  // Prompt / Mission
+  // ----------------------------------------------------------------
+
+  getPrompt(): TeamPrompt | null {
+    return this.currentPrompt;
+  }
+
+  getMission(): string {
+    return this.currentPrompt?.mission ?? this.getDescription();
+  }
 
   // ----------------------------------------------------------------
   // Members

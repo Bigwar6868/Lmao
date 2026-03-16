@@ -12,7 +12,7 @@ import { GeopoliticalAnalyzer } from './geopolitical.js';
 export { FredClient } from './fred.js';
 export { EconomicCalendar } from './calendar.js';
 export { GeopoliticalAnalyzer } from './geopolitical.js';
-export type { FredSeriesId, EconomicEvent, GeopoliticalRisk } from './types.js';
+export type { FredSeriesId, EconomicEvent, GeopoliticalRisk, GeopoliticalFactor, PolicyChange, GlobalMacroSnapshot } from './types.js';
 
 const logger = createModuleLogger('macro-economist');
 
@@ -74,6 +74,64 @@ export class MacroEconomist {
     }
     const env = await this.getEnvironment();
     return env.bias;
+  }
+
+  /**
+   * Get geopolitical risk factors for a specific asset.
+   */
+  getGeopoliticalFactorsForAsset(symbol: string) {
+    return this.geopolitical.getFactorsForAsset(symbol);
+  }
+
+  /**
+   * Get recent policy changes affecting a market class.
+   */
+  getPolicyChanges(market?: 'crypto' | 'stocks' | 'forex') {
+    if (market) return this.geopolitical.getPolicyChangesForMarket(market);
+    return this.geopolitical.getPolicyChanges();
+  }
+
+  /**
+   * Get global macro data for all regions (US, EU, China, Japan, UK).
+   */
+  getGlobalMacro() {
+    return this.geopolitical.getGlobalMacro();
+  }
+
+  /**
+   * Get macro data for a specific region.
+   */
+  getRegionMacro(region: string) {
+    return this.geopolitical.getRegionMacro(region);
+  }
+
+  /**
+   * Get overall global policy bias across all central banks.
+   */
+  getGlobalPolicyBias() {
+    return this.geopolitical.getGlobalPolicyBias();
+  }
+
+  /**
+   * Get upcoming economic events (calendar).
+   */
+  getUpcomingEvents() {
+    return this.calendar.getUpcomingEvents();
+  }
+
+  /**
+   * Check if a high-impact event is within 24 hours.
+   */
+  isHighImpactPeriod() {
+    return this.calendar.isHighImpactPeriod();
+  }
+
+  /**
+   * Full geopolitical risk report.
+   */
+  async getGeopoliticalReport(): Promise<string> {
+    const risk = await this.geopolitical.assess();
+    return this.geopolitical.formatReport(risk);
   }
 
   // ---- private ----

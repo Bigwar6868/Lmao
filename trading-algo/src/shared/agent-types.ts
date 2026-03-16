@@ -232,6 +232,7 @@ export interface AgentSwarmConfig {
 // ============================================================
 
 export type DirectiveType =
+  | 'set-prompt'          // CEO assigns/updates a team's mission & objectives
   | 'focus-assets'        // "Focus on BTC, ETH, NVDA"
   | 'deploy-strategy'     // "Deploy breakout on crypto"
   | 'spawn-agent'         // "Spawn 3 more momentum agents"
@@ -347,6 +348,20 @@ export interface TeamConfig {
   leadId?: AgentId;
   memberIds: AgentId[];
   description: string;
+}
+
+/**
+ * Team prompt/mission — CEO assigns objectives to each team.
+ * Teams read their prompt to know what to focus on.
+ */
+export interface TeamPrompt {
+  teamId: TeamId;
+  mission: string;                        // High-level mission statement
+  objectives: string[];                   // Specific objectives to pursue
+  constraints: string[];                  // Boundaries / what NOT to do
+  focus?: Record<string, unknown>;        // Dynamic focus parameters (e.g., asset classes, regions)
+  issuedAt: number;
+  updatedAt: number;
 }
 
 /** CEO's view of system state */

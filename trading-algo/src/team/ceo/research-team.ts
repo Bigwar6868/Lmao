@@ -93,6 +93,66 @@ export class ResearchTeam extends TeamBase {
   }
 
   // ----------------------------------------------------------------
+  // Broad Research Data — Geopolitics, Policy, Global Macro
+  // ----------------------------------------------------------------
+
+  /**
+   * Get geopolitical risk factors for a specific asset symbol.
+   */
+  getGeopoliticalFactorsForAsset(symbol: string) {
+    return this.macroEconomist.getGeopoliticalFactorsForAsset(symbol);
+  }
+
+  /**
+   * Get recent policy changes from central banks and regulators.
+   */
+  getPolicyChanges(market?: 'crypto' | 'stocks' | 'forex') {
+    return this.macroEconomist.getPolicyChanges(market);
+  }
+
+  /**
+   * Get global macro snapshots for all tracked regions (US, EU, China, Japan, UK).
+   */
+  getGlobalMacro() {
+    return this.macroEconomist.getGlobalMacro();
+  }
+
+  /**
+   * Get macro data for a specific region.
+   */
+  getRegionMacro(region: string) {
+    return this.macroEconomist.getRegionMacro(region);
+  }
+
+  /**
+   * Get overall global central bank policy direction.
+   */
+  getGlobalPolicyBias() {
+    return this.macroEconomist.getGlobalPolicyBias();
+  }
+
+  /**
+   * Get upcoming economic calendar events.
+   */
+  getUpcomingEvents() {
+    return this.macroEconomist.getUpcomingEvents();
+  }
+
+  /**
+   * Check if we're near a high-impact event.
+   */
+  isHighImpactPeriod() {
+    return this.macroEconomist.isHighImpactPeriod();
+  }
+
+  /**
+   * Full geopolitical + macro report.
+   */
+  async getGeopoliticalReport() {
+    return this.macroEconomist.getGeopoliticalReport();
+  }
+
+  // ----------------------------------------------------------------
   // CEO Directive Handling
   // ----------------------------------------------------------------
 

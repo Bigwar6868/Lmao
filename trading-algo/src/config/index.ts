@@ -66,4 +66,9 @@ export const config = {
   networkMessageTimeoutMs: 5_000,      // max time per message handler
   tradingCycleTimeoutMs: 120_000,      // max time for a full trading cycle
   processWatchdogMs: 180_000,          // force-exit if main() hangs
+
+  // Auto-trading (24/7 mode)
+  autoTradeCycleMs: Number(process.env.AUTO_TRADE_CYCLE_MS ?? 60_000),       // 1 min between cycles
+  autoTradeReviewInterval: Number(process.env.AUTO_TRADE_REVIEW_INTERVAL ?? 10), // review every N cycles
+  autoTradeEvolveInterval: Number(process.env.AUTO_TRADE_EVOLVE_INTERVAL ?? 50), // evolve every N cycles
 } as const;
