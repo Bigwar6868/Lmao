@@ -330,8 +330,8 @@ export class TradingSystem {
     this.researchTeam.updateBrainContext(marketDataMap, allSignals, macro);
     this.tradingTeam.updateBrainContext(marketDataMap, allSignals, macro);
 
-    // 2c. Research team thinks about what it found
-    this.researchTeam.brain.think('What do the current signals tell us about market conditions?', {
+    // 2c. Research team thinks about what it found (AI-powered if available)
+    await this.researchTeam.brain.thinkAsync('What do the current signals tell us about market conditions?', {
       marketData: marketDataMap, signals: allSignals, macro,
     });
 

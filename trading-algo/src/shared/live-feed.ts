@@ -281,8 +281,9 @@ function formatThought(name: string, chain: ThoughtChain): string {
   const color = nameColor(name);
   const lines: string[] = [];
 
+  const aiTag = chain.usedAI ? `${C.bold}\x1b[38;5;39m[AI]${C.reset}` : `${C.dim}[RULES]${C.reset}`;
   lines.push(
-    `${ts()} ${T.thought}[THINKING]${C.reset} ${color}${C.bold}${name}${C.reset} ` +
+    `${ts()} ${T.thought}[THINKING]${C.reset} ${aiTag} ${color}${C.bold}${name}${C.reset} ` +
     `${C.dim}(${chain.role})${C.reset}: "${chain.question}" ${C.dim}[${chain.durationMs}ms]${C.reset}`,
   );
 

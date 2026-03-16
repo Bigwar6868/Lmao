@@ -255,7 +255,9 @@ export class AgentLoop {
 
   private async explore(): Promise<void> {
     const ctx = this.contextProvider?.() ?? {};
-    const chain = this.brain.think('What should I do while idle?', ctx);
+
+    // Use AI-powered thinking if available, else rule-based
+    const chain = await this.brain.thinkAsync('What should I do while idle?', ctx);
     this.feedback?.onThinking(this.agentId, this.name, chain);
 
     if (chain.confidence > 0.3 && this.exploreHandler) {

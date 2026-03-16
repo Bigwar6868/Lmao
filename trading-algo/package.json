@@ -29,6 +29,7 @@
     "outputPath": "release"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.79.0",
     "axios": "^1.7.0",
     "ccxt": "^4.4.0",
     "dotenv": "^16.4.0",
