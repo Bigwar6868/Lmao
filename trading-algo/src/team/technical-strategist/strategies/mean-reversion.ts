@@ -88,9 +88,10 @@ export class MeanReversionStrategy implements Strategy {
     };
 
     // BUY: price at or below lower band + RSI oversold
-    if (price <= lowerBand && currentRsi < oversold) {
+    const bandwidth = upperBand - lowerBand;
+    if (price <= lowerBand && currentRsi < oversold && bandwidth > 0) {
       // Confidence: how far below band + how extreme the RSI
-      const bandDistance = (lowerBand - price) / (upperBand - lowerBand);
+      const bandDistance = (lowerBand - price) / bandwidth;
       const rsiExtremity = (oversold - currentRsi) / oversold;
       const confidence = Math.min(1, 0.5 + bandDistance * 0.3 + rsiExtremity * 0.3);
 
@@ -109,8 +110,8 @@ export class MeanReversionStrategy implements Strategy {
     }
 
     // SELL: price at or above upper band + RSI overbought
-    if (price >= upperBand && currentRsi > overbought) {
-      const bandDistance = (price - upperBand) / (upperBand - lowerBand);
+    if (price >= upperBand && currentRsi > overbought && bandwidth > 0) {
+      const bandDistance = (price - upperBand) / bandwidth;
       const rsiExtremity = (currentRsi - overbought) / (100 - overbought);
       const confidence = Math.min(1, 0.5 + bandDistance * 0.3 + rsiExtremity * 0.3);
 

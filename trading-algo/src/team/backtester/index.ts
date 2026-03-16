@@ -72,13 +72,13 @@ export class Backtester {
       results.push(result);
     }
 
-    // Sort by fitness (Sharpe * winRate / drawdown)
+    // Sort by fitness (Sharpe * winRate / drawdown) — 0-trade strategies rank last
     results.sort((a, b) => {
       const fitnessA = this.optimizer.calculateFitness(
-        a.metrics.sharpeRatio, a.metrics.winRate, a.metrics.maxDrawdownPct
+        a.metrics.sharpeRatio, a.metrics.winRate, a.metrics.maxDrawdownPct, a.metrics.totalTrades
       );
       const fitnessB = this.optimizer.calculateFitness(
-        b.metrics.sharpeRatio, b.metrics.winRate, b.metrics.maxDrawdownPct
+        b.metrics.sharpeRatio, b.metrics.winRate, b.metrics.maxDrawdownPct, b.metrics.totalTrades
       );
       return fitnessB - fitnessA;
     });

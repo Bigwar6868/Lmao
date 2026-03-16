@@ -47,7 +47,8 @@ export class StrategyOptimizer {
         const fitness = this.calculateFitness(
           result.metrics.sharpeRatio,
           result.metrics.winRate,
-          result.metrics.maxDrawdownPct
+          result.metrics.maxDrawdownPct,
+          result.metrics.totalTrades
         );
         dna.fitness = fitness;
         results.push({ dna, metrics: result.metrics });
@@ -165,7 +166,9 @@ export class StrategyOptimizer {
     return windows;
   }
 
-  calculateFitness(sharpe: number, winRate: number, maxDrawdownPct: number): number {
+  calculateFitness(sharpe: number, winRate: number, maxDrawdownPct: number, totalTrades = 0): number {
+    // Strategies with 0 trades get worst-possible fitness — doing nothing isn't a strategy
+    if (totalTrades === 0) return -Infinity;
     const drawdownPenalty = maxDrawdownPct > 0 ? maxDrawdownPct : 1;
     return (sharpe * winRate * 100) / drawdownPenalty;
   }

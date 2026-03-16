@@ -79,9 +79,9 @@ export class StockDataFetcher {
    * @param symbol - Ticker symbol, e.g. "AAPL"
    */
   async fetchDaily(symbol: string): Promise<Candle[]> {
-    // In cloud mode, skip network entirely
-    if (config.cloudMode) {
-      log.info({ symbol }, 'Cloud mode — using synthetic stock data');
+    // In cloud mode or no real API key, skip network entirely
+    if (config.cloudMode || !this.apiKey || this.apiKey === 'demo') {
+      log.info({ symbol }, 'No API key — using synthetic stock data');
       return generateSyntheticCandles(symbol, 100, { intervalMs: 86_400_000 });
     }
 
@@ -129,9 +129,9 @@ export class StockDataFetcher {
   ): Promise<Candle[]> {
     const intervalMs: Record<string, number> = { '5min': 300_000, '15min': 900_000, '60min': 3_600_000 };
 
-    // In cloud mode, skip network entirely
-    if (config.cloudMode) {
-      log.info({ symbol, interval }, 'Cloud mode — using synthetic intraday stock data');
+    // In cloud mode or no real API key, skip network entirely
+    if (config.cloudMode || !this.apiKey || this.apiKey === 'demo') {
+      log.info({ symbol, interval }, 'No API key — using synthetic intraday stock data');
       return generateSyntheticCandles(symbol, 100, { intervalMs: intervalMs[interval] ?? 3_600_000 });
     }
 

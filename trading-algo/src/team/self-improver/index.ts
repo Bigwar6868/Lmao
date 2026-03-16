@@ -80,9 +80,11 @@ export class SelfImprover {
           slippage: 0.0005,
         });
 
-        // Update fitness
-        const fitness = (result.metrics.sharpeRatio * result.metrics.winRate * 100) /
-          (result.metrics.maxDrawdownPct || 1);
+        // Update fitness — penalize strategies that generate 0 trades
+        const fitness = result.metrics.totalTrades === 0
+          ? -Infinity
+          : (result.metrics.sharpeRatio * result.metrics.winRate * 100) /
+            (result.metrics.maxDrawdownPct || 1);
         dna.fitness = fitness;
       } catch {
         dna.fitness = -1;

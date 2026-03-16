@@ -78,9 +78,9 @@ export class CryptoDataFetcher {
     timeframe: Timeframe,
     limit = 200,
   ): Promise<Candle[]> {
-    // In cloud mode, skip network entirely — go straight to synthetic data
-    if (config.cloudMode) {
-      log.info({ symbol, timeframe }, 'Cloud mode — using synthetic data');
+    // In cloud mode or no API key, skip network entirely — go straight to synthetic data
+    if (config.cloudMode || !config.binanceApiKey) {
+      log.info({ symbol, timeframe }, 'No API key — using synthetic data');
       return generateSyntheticCandles(symbol, limit, {
         intervalMs: TIMEFRAME_MS[timeframe] ?? 3_600_000,
       });

@@ -76,9 +76,9 @@ export class ForexDataFetcher {
   ): Promise<Candle[]> {
     const pair = `${fromCurrency}/${toCurrency}`;
 
-    // In cloud mode, skip network entirely
-    if (config.cloudMode) {
-      log.info({ pair }, 'Cloud mode — using synthetic forex data');
+    // In cloud mode or no real API key, skip network entirely
+    if (config.cloudMode || !this.apiKey || this.apiKey === 'demo') {
+      log.info({ pair }, 'No API key — using synthetic forex data');
       return generateSyntheticCandles(pair, 100, { intervalMs: 86_400_000, volatility: 0.005 });
     }
 
@@ -130,9 +130,9 @@ export class ForexDataFetcher {
     const pair = `${fromCurrency}/${toCurrency}`;
     const intervalMsMap: Record<string, number> = { '5min': 300_000, '15min': 900_000, '60min': 3_600_000 };
 
-    // In cloud mode, skip network entirely
-    if (config.cloudMode) {
-      log.info({ pair, interval }, 'Cloud mode — using synthetic intraday forex data');
+    // In cloud mode or no real API key, skip network entirely
+    if (config.cloudMode || !this.apiKey || this.apiKey === 'demo') {
+      log.info({ pair, interval }, 'No API key — using synthetic intraday forex data');
       return generateSyntheticCandles(pair, 100, { intervalMs: intervalMsMap[interval] ?? 3_600_000, volatility: 0.005 });
     }
 
