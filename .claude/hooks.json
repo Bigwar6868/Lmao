@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd trading-algo && npm install --prefer-offline --no-audit 2>/dev/null || npm install"
+            "command": "cd trading-algo && npm install --prefer-offline --no-audit 2>/dev/null || npm install && npm run seed-data 2>/dev/null || true"
           }
         ]
       }

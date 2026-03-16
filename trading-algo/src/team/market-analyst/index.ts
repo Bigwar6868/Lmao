@@ -65,7 +65,13 @@ export class MarketAnalyst {
       const raw = await readFile(path, 'utf-8');
       const cached = JSON.parse(raw) as MarketData;
 
-      if (Date.now() - cached.lastUpdated > config.cacheTtlMs) {
+      const age = Date.now() - cached.lastUpdated;
+      if (age > config.cacheTtlMs) {
+        // In cloud mode, use stale cache rather than making network calls that will fail
+        if (config.cloudMode) {
+          log.info({ path, ageHours: Math.round(age / 3_600_000) }, 'Cloud mode — using stale cache');
+          return cached;
+        }
         log.debug({ path }, 'Cache expired');
         return null;
       }

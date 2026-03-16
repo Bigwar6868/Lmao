@@ -78,6 +78,14 @@ export class CryptoDataFetcher {
     timeframe: Timeframe,
     limit = 200,
   ): Promise<Candle[]> {
+    // In cloud mode, skip network entirely — go straight to synthetic data
+    if (config.cloudMode) {
+      log.info({ symbol, timeframe }, 'Cloud mode — using synthetic data');
+      return generateSyntheticCandles(symbol, limit, {
+        intervalMs: TIMEFRAME_MS[timeframe] ?? 3_600_000,
+      });
+    }
+
     await this.throttle();
 
     log.info({ symbol, timeframe, limit }, 'Fetching OHLCV');

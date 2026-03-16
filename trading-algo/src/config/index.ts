@@ -1,6 +1,23 @@
 import 'dotenv/config';
 
+/**
+ * Detect cloud sandbox: CLOUD_MODE env var, or auto-detect by checking
+ * for common sandbox indicators (no HOME set, running as root in container).
+ */
+function detectCloudMode(): boolean {
+  if (process.env.CLOUD_MODE === 'true') return true;
+  if (process.env.CLOUD_MODE === 'false') return false;
+  // Auto-detect: Claude Code cloud sandbox runs as root with limited networking
+  const isContainer = process.getuid?.() === 0 && !process.env.USER;
+  return isContainer;
+}
+
+const cloudMode = detectCloudMode();
+
 export const config = {
+  // Cloud
+  cloudMode,
+
   // API Keys
   alphaVantageKey: process.env.ALPHA_VANTAGE_API_KEY ?? 'demo',
   fredApiKey: process.env.FRED_API_KEY ?? '',
@@ -38,5 +55,6 @@ export const config = {
   // Data
   dataDir: new URL('../../data', import.meta.url).pathname,
   cacheEnabled: true,
-  cacheTtlMs: 60 * 60 * 1000, // 1 hour
+  cacheTtlMs: cloudMode ? 24 * 60 * 60 * 1000 : 60 * 60 * 1000, // 24h in cloud, 1h local
+  networkTimeoutMs: cloudMode ? 2_000 : 10_000, // fast fail in cloud
 } as const;

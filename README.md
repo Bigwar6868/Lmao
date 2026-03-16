@@ -49,7 +49,41 @@ npm run paper-trade   # Execute a live paper trading cycle
 npm run analyze       # Run market analysis only
 npm run evolve        # Evolve strategy parameters (genetic algorithm)
 npm run diagnose      # Full system diagnostic scan
+npm run seed-data     # Pre-populate cache with synthetic data (cloud mode)
 npm run test          # Run unit tests (vitest)
+```
+
+## Cloud Mode (Claude Code Web/Mobile)
+
+The system auto-detects when running in a Claude Code cloud sandbox and activates **cloud mode**:
+
+- **Skips network calls** — no waiting for API timeouts (Binance, Alpha Vantage, FRED are unreachable)
+- **Extended cache TTL** — 24 hours instead of 1 hour, so seeded data stays valid
+- **Stale cache reuse** — even expired cache is used instead of discarded
+- **Auto-seeds on session start** — the SessionStart hook runs `npm run seed-data` to populate all 22 assets
+
+### How it works
+
+1. On session start, `seed-data` generates synthetic OHLCV data for all assets
+2. All fetchers detect `cloudMode` and return synthetic data immediately (no network delay)
+3. The cache layer accepts stale data rather than re-fetching
+4. Trading logic, strategies, backtesting, and evolution all run normally
+
+### Seeding real data in cloud
+
+Claude Code (the AI) can replace synthetic data with real prices:
+
+```
+"Fetch the current BTC price and seed the cache with real data"
+```
+
+Claude will use WebFetch to get real market data from public APIs, then write JSON files directly to `data/historical/` — the algo reads from cache on the next run.
+
+### Manual override
+
+```bash
+CLOUD_MODE=true npm run paper-trade    # Force cloud mode
+CLOUD_MODE=false npm run paper-trade   # Force local mode (try network)
 ```
 
 ## Strategy Evolution

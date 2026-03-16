@@ -74,8 +74,15 @@ export class ForexDataFetcher {
     fromCurrency: string,
     toCurrency: string,
   ): Promise<Candle[]> {
-    await this.throttle();
     const pair = `${fromCurrency}/${toCurrency}`;
+
+    // In cloud mode, skip network entirely
+    if (config.cloudMode) {
+      log.info({ pair }, 'Cloud mode — using synthetic forex data');
+      return generateSyntheticCandles(pair, 100, { intervalMs: 86_400_000, volatility: 0.005 });
+    }
+
+    await this.throttle();
     log.info({ pair }, 'Fetching daily forex data');
 
     try {
@@ -87,7 +94,7 @@ export class ForexDataFetcher {
           outputsize: 'compact',
           apikey: this.apiKey,
         },
-        timeout: 10_000,
+        timeout: config.networkTimeoutMs,
       });
 
       const seriesKey = 'Time Series FX (Daily)';
@@ -120,11 +127,17 @@ export class ForexDataFetcher {
     toCurrency: string,
     interval: string,
   ): Promise<Candle[]> {
-    await this.throttle();
     const pair = `${fromCurrency}/${toCurrency}`;
-    log.info({ pair, interval }, 'Fetching intraday forex data');
-
     const intervalMsMap: Record<string, number> = { '5min': 300_000, '15min': 900_000, '60min': 3_600_000 };
+
+    // In cloud mode, skip network entirely
+    if (config.cloudMode) {
+      log.info({ pair, interval }, 'Cloud mode — using synthetic intraday forex data');
+      return generateSyntheticCandles(pair, 100, { intervalMs: intervalMsMap[interval] ?? 3_600_000, volatility: 0.005 });
+    }
+
+    await this.throttle();
+    log.info({ pair, interval }, 'Fetching intraday forex data');
 
     try {
       const { data } = await axios.get(AV_BASE, {
@@ -136,7 +149,7 @@ export class ForexDataFetcher {
           outputsize: 'compact',
           apikey: this.apiKey,
         },
-        timeout: 10_000,
+        timeout: config.networkTimeoutMs,
       });
 
       const seriesKey = `Time Series FX (Intraday)`;
