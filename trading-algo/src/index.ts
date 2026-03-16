@@ -15,6 +15,7 @@ import { OpsTeam } from './team/ceo/ops-team.js';
 import { DiagnosticsEngine } from './team/diagnostics/index.js';
 import { eventBus } from './shared/events.js';
 import { createModuleLogger } from './shared/logger.js';
+import { attachLiveFeed, registerAgentName, printSystemEvent, printSeparator } from './shared/live-feed.js';
 import type { AssetInfo, Timeframe, Signal, MarketData, Candle } from './shared/types.js';
 import type { AgentId } from './shared/agent-types.js';
 
@@ -53,8 +54,12 @@ export class TradingSystem {
   private strategies = new Map<string, import('./shared/types.js').Strategy>();
 
   constructor() {
+    // Attach live feed to network — shows agent communication in real-time
+    attachLiveFeed(this.network);
+
     // Create CEO
     this.ceo = new CEOAgent(this.network);
+    registerAgentName(this.ceo.id, 'CEO');
 
     // Create teams — each gets the network + CEO id
     this.tradingTeam = new TradingTeam(this.network, this.ceo.id);
@@ -62,6 +67,13 @@ export class TradingSystem {
     this.riskTeam = new RiskTeam(this.network, this.ceo.id);
     this.evolutionTeam = new EvolutionTeam(this.network, this.ceo.id);
     this.opsTeam = new OpsTeam(this.network, this.ceo.id);
+
+    // Register team names for live feed
+    registerAgentName(this.tradingTeam.leadId, 'Trading Team');
+    registerAgentName(this.researchTeam.leadId, 'Research Team');
+    registerAgentName(this.riskTeam.leadId, 'Risk Team');
+    registerAgentName(this.evolutionTeam.leadId, 'Evolution Team');
+    registerAgentName(this.opsTeam.leadId, 'Ops Team');
 
     log.info('TradingSystem created with CEO + 5 teams');
   }
@@ -91,13 +103,15 @@ export class TradingSystem {
     // 5. Spawn initial trading agents (2 per strategy for debate)
     for (const strategy of strategyList) {
       for (let i = 0; i < 2; i++) {
+        const agentName = `${strategy.name}-prime${i > 0 ? `-${i}` : ''}`;
         const agent = new TradingAgent({
           strategy,
           network: this.network,
-          name: `${strategy.name}-prime${i > 0 ? `-${i}` : ''}`,
+          name: agentName,
         });
         this.agents.set(agent.id, agent);
         this.tradingTeam.registerAgent(agent);
+        registerAgentName(agent.id, agentName);
       }
     }
 
@@ -260,6 +274,8 @@ export class TradingSystem {
     }
 
     log.info({ cycle, agents: this.agents.size }, 'Starting CEO-driven trading cycle');
+    printSeparator(`CYCLE ${cycle} — ${new Date().toLocaleTimeString()}`);
+    printSystemEvent(`Starting cycle ${cycle} with ${this.agents.size} agents`);
 
     // 1. Research team fetches data for the full asset universe
     const macro = await this.researchTeam.getMacroEnvironment();
@@ -269,7 +285,9 @@ export class TradingSystem {
     const allSignals = await this.researchTeam.analyzeAll(marketDataMap, macro);
 
     // 3. Trading Team autonomously selects which assets to trade
+    printSystemEvent(`Research complete: ${marketDataMap.size} assets scanned, ${allSignals.length} signals found`);
     const selectedAssets = this.tradingTeam.selectAssetsToTrade(marketDataMap, allSignals);
+    printSystemEvent(`Trading Team selected ${selectedAssets.length}/${assets.length} assets to trade`);
     log.info({ selected: selectedAssets.length, universe: assets.length }, 'Trading Team selected assets');
 
     // 4. Filter market data to only selected assets
@@ -290,9 +308,11 @@ export class TradingSystem {
     this.tradingTeam.updatePrices(prices);
 
     // 6. Trading team runs cycle on selected assets (agents analyze, debate, execute)
+    printSeparator('AGENT DEBATE');
     const { approvedSignals, debateSummary, executed, rejected } = await this.tradingTeam.runCycle(
       tradingDataMap, macro,
     );
+    printSeparator('EXECUTION');
 
     // 4. Print debate summary
     console.log(ConsensusEngine.formatDebateSummary(debateSummary));
@@ -316,6 +336,12 @@ export class TradingSystem {
     const { spawned, retired } = this.spawner.evaluate();
     for (const agent of spawned) {
       this.tradingTeam.registerAgent(agent);
+      registerAgentName(agent.id, agent.name);
+      printSystemEvent(`Spawned new agent: ${agent.name}`);
+    }
+    for (const agentId of retired) {
+      const retiredAgent = this.agents.get(agentId);
+      printSystemEvent(`Retired agent: ${retiredAgent?.name ?? agentId.slice(0, 8)}`);
     }
 
     // 7. Evolve underperformers every 5 cycles
@@ -539,13 +565,16 @@ async function main() {
   console.log('');
 }
 
-// Process watchdog
-const watchdog = setTimeout(() => {
-  console.error(`WATCHDOG: Process exceeded ${config.processWatchdogMs}ms — forcing exit`);
-  process.exit(1);
-}, config.processWatchdogMs);
-watchdog.unref();
+// Only run main() when this file is the entry point (not when imported by scripts)
+const isDirectRun = process.argv[1]?.includes('index.ts') || process.argv[1]?.includes('index.js');
+if (isDirectRun) {
+  const watchdog = setTimeout(() => {
+    console.error(`WATCHDOG: Process exceeded ${config.processWatchdogMs}ms — forcing exit`);
+    process.exit(1);
+  }, config.processWatchdogMs);
+  watchdog.unref();
 
-main()
-  .catch(console.error)
-  .finally(() => clearTimeout(watchdog));
+  main()
+    .catch(console.error)
+    .finally(() => clearTimeout(watchdog));
+}
