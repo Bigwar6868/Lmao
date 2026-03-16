@@ -14,6 +14,7 @@ export class PaperTrader {
   private portfolio: Portfolio;
   private orderHistory: Order[] = [];
   private config: ExecutorConfig;
+  private peakEquity: number;
 
   constructor(config?: Partial<ExecutorConfig>) {
     this.config = {
@@ -23,6 +24,8 @@ export class PaperTrader {
       defaultSlippage: config?.defaultSlippage ?? 0.0005,
       defaultCommission: config?.defaultCommission ?? 0.001,
     };
+
+    this.peakEquity = this.config.initialCapital;
 
     this.portfolio = {
       capital: this.config.initialCapital,
@@ -144,8 +147,6 @@ export class PaperTrader {
    * Update all position prices (called on market data update).
    */
   updatePrices(prices: Map<string, number>): void {
-    let peakEquity = this.config.initialCapital;
-
     for (const pos of this.portfolio.positions) {
       const price = prices.get(pos.asset.symbol);
       if (price !== undefined) {
@@ -159,8 +160,8 @@ export class PaperTrader {
       this.portfolio.positions.reduce((sum, p) => sum + p.currentPrice * p.quantity, 0);
 
     this.portfolio.capital = totalEquity;
-    if (totalEquity > peakEquity) peakEquity = totalEquity;
-    const drawdown = ((peakEquity - totalEquity) / peakEquity) * 100;
+    if (totalEquity > this.peakEquity) this.peakEquity = totalEquity;
+    const drawdown = ((this.peakEquity - totalEquity) / this.peakEquity) * 100;
     if (drawdown > this.portfolio.maxDrawdown) {
       this.portfolio.maxDrawdown = drawdown;
     }

@@ -193,6 +193,7 @@ export class RegimeDetector {
       case 'high': return -0.5;
       case 'medium': return 0;
       case 'low': return 0.3;
+      default: return 0;
     }
   }
 

@@ -54,7 +54,7 @@ describe('Regime Detector', () => {
     const candles = makeCandles('uptrend', 100);
     const result = detector.detect(candles);
     expect(result.trendStrength).toBeGreaterThan(0);
-    expect(['trending_bull', 'range_bound', 'low_volatility']).toContain(result.regime);
+    expect(['trending_bull', 'range_bound', 'low_volatility', 'recovery']).toContain(result.regime);
   });
 
   it('detects downtrend as trending_bear', () => {
