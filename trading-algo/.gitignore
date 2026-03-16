@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.env
+data/historical/*.json
+data/results/*.json
+data/journal/*.json
+*.log
+.DS_Store
