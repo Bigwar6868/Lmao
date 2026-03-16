@@ -13,6 +13,7 @@
 - **server-sequential-thinking**: Break down complex problems step by step. Use for architecture decisions and debugging.
 - **server-exa**: AI-powered web search and crawling. Use for research, market analysis, and finding up-to-date information.
 - **server-shadcn**: shadcn/ui component context for React, Vue, Svelte. Use when building UIs with shadcn components.
+- **server-alpaca**: Alpaca Trading API integration. Use for stock/ETF/crypto/options trading, portfolio management, market data, and watchlists. Paper trading enabled.
 
 ## Coding Standards
 - TypeScript over JavaScript when possible
