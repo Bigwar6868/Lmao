@@ -16,7 +16,8 @@ import type {
   DebateSession,
 } from '../../shared/agent-types.js';
 import { createModuleLogger } from '../../shared/logger.js';
-import { roundTo } from '../../shared/utils.js';
+import { roundTo, withTimeout } from '../../shared/utils.js';
+import { config } from '../../config/index.js';
 
 import { AgentNetwork } from './network.js';
 import { TradingAgent } from './trading-agent.js';
@@ -162,14 +163,30 @@ export class AgentSwarm {
 
     log.info({ cycle: this.cycleCount, agents: this.agents.size }, 'Starting multi-agent cycle');
 
-    // 1. All agents analyze market data independently
-    for (const [, agent] of this.agents) {
-      if (agent.getStatus() === 'retired') continue;
+    // 1. All agents analyze market data in parallel (with per-agent timeout)
+    const activeAgents = [...this.agents.values()].filter(a => a.getStatus() !== 'retired');
+    const dataEntries = [...marketDataMap.values()];
+    const analyzeTimeout = config.agentAnalyzeTimeoutMs;
 
-      for (const [, data] of marketDataMap) {
-        await agent.analyze(data, macro);
-      }
-    }
+    await Promise.allSettled(
+      activeAgents.map(async (agent) => {
+        for (const data of dataEntries) {
+          try {
+            await withTimeout(
+              agent.analyze(data, macro),
+              analyzeTimeout,
+              `agent:${agent.profile.name}:${data.asset.symbol}`,
+            );
+          } catch (err) {
+            log.warn({
+              agent: agent.profile.name,
+              asset: data.asset.symbol,
+              err: (err as Error).message,
+            }, 'Agent analysis timed out or failed — skipping');
+          }
+        }
+      }),
+    );
 
     // 2. Consensus engine resolves all debates
     const verdicts = this.consensus.resolveAll();

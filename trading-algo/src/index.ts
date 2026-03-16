@@ -367,4 +367,13 @@ async function main() {
   console.log('');
 }
 
-main().catch(console.error);
+// Process watchdog: force-exit if main() hangs beyond the configured timeout
+const watchdog = setTimeout(() => {
+  console.error(`WATCHDOG: Process exceeded ${config.processWatchdogMs}ms — forcing exit`);
+  process.exit(1);
+}, config.processWatchdogMs);
+watchdog.unref(); // don't keep process alive just for the watchdog
+
+main()
+  .catch(console.error)
+  .finally(() => clearTimeout(watchdog));

@@ -1,5 +1,7 @@
 import { TradingOrchestrator } from '../index.js';
 import { allAssets, cryptoAssets, stockAssets, forexAssets } from '../config/assets.js';
+import { config } from '../config/index.js';
+import { withTimeout } from '../shared/utils.js';
 import type { AssetInfo, Timeframe } from '../shared/types.js';
 
 async function main() {
@@ -27,16 +29,36 @@ async function main() {
   console.log(`  Forex:  ${forexAssets.length} pairs`);
   console.log(`\nPress Ctrl+C to stop\n`);
 
-  // Run initial cycle on ALL assets
-  await orchestrator.tradingCycle(assets, timeframe);
+  // Run initial cycle on ALL assets (with timeout)
+  try {
+    await withTimeout(
+      orchestrator.tradingCycle(assets, timeframe),
+      config.tradingCycleTimeoutMs,
+      'Initial trading cycle',
+    );
+  } catch (err) {
+    console.error('Initial cycle error:', (err as Error).message);
+  }
 
-  // Schedule recurring cycles
+  // Schedule recurring cycles — guard against overlapping runs
+  let cycleRunning = false;
   const interval = setInterval(async () => {
+    if (cycleRunning) {
+      console.warn('Previous cycle still running — skipping this interval');
+      return;
+    }
+    cycleRunning = true;
     try {
       console.log(`\n--- Trading Cycle at ${new Date().toISOString()} ---`);
-      await orchestrator.tradingCycle(assets, timeframe);
+      await withTimeout(
+        orchestrator.tradingCycle(assets, timeframe),
+        config.tradingCycleTimeoutMs,
+        'Trading cycle',
+      );
     } catch (err) {
       console.error('Trading cycle error:', (err as Error).message);
+    } finally {
+      cycleRunning = false;
     }
   }, intervalMinutes * 60 * 1000);
 

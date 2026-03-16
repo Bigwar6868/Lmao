@@ -60,4 +60,10 @@ export const config = {
   cacheEnabled: true,
   cacheTtlMs: cloudMode ? 24 * 60 * 60 * 1000 : 60 * 60 * 1000, // 24h in cloud, 1h local
   networkTimeoutMs: cloudMode ? 2_000 : 10_000, // fast fail in cloud
+
+  // Timeouts — prevent agents from hanging indefinitely
+  agentAnalyzeTimeoutMs: 10_000,      // max time per agent.analyze() call
+  networkMessageTimeoutMs: 5_000,      // max time per message handler
+  tradingCycleTimeoutMs: 120_000,      // max time for a full trading cycle
+  processWatchdogMs: 180_000,          // force-exit if main() hangs
 } as const;

@@ -1,5 +1,6 @@
 import { TradingOrchestrator } from '../index.js';
 import { allAssets, cryptoAssets, stockAssets, forexAssets } from '../config/assets.js';
+import { config } from '../config/index.js';
 import { OpportunityScanner } from '../team/opportunity-scanner/index.js';
 import type { AssetInfo, Timeframe } from '../shared/types.js';
 
@@ -60,4 +61,6 @@ async function main() {
   await orchestrator.shutdown();
 }
 
-main().catch(console.error);
+const watchdog = setTimeout(() => { console.error('WATCHDOG: scan exceeded timeout — forcing exit'); process.exit(1); }, config.processWatchdogMs);
+watchdog.unref();
+main().catch(console.error).finally(() => clearTimeout(watchdog));

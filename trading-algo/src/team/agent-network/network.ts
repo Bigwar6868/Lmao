@@ -8,8 +8,9 @@ import type {
   AgentMessagePayload,
   MessageType,
 } from '../../shared/agent-types.js';
-import { generateId } from '../../shared/utils.js';
+import { generateId, withTimeout } from '../../shared/utils.js';
 import { createModuleLogger } from '../../shared/logger.js';
+import { config } from '../../config/index.js';
 
 const log = createModuleLogger('agent-network');
 
@@ -76,6 +77,7 @@ export class AgentNetwork {
     }, 'Message sent');
 
     const promises: Promise<void>[] = [];
+    const timeout = config.networkMessageTimeoutMs;
 
     // Deliver to type-specific handlers
     const handlers = this.typeHandlers.get(message.type);
@@ -85,8 +87,17 @@ export class AgentNetwork {
         if (agentId === message.from) continue;
         if (message.to !== 'all' && message.to !== agentId) continue;
 
-        const result = handler(message);
-        if (result instanceof Promise) promises.push(result);
+        try {
+          const result = handler(message);
+          if (result instanceof Promise) {
+            promises.push(
+              withTimeout(result, timeout, `handler:${message.type}:${agentId.slice(0, 8)}`)
+                .catch(err => { log.warn({ err: (err as Error).message, agentId: agentId.slice(0, 8), type: message.type }, 'Message handler timed out'); }),
+            );
+          }
+        } catch (err) {
+          log.warn({ err: (err as Error).message, agentId: agentId.slice(0, 8) }, 'Message handler threw synchronously');
+        }
       }
     }
 
@@ -95,8 +106,17 @@ export class AgentNetwork {
       if (agentId === message.from) continue;
       if (message.to !== 'all' && message.to !== agentId) continue;
 
-      const result = handler(message);
-      if (result instanceof Promise) promises.push(result);
+      try {
+        const result = handler(message);
+        if (result instanceof Promise) {
+          promises.push(
+            withTimeout(result, timeout, `global:${agentId.slice(0, 8)}`)
+              .catch(err => { log.warn({ err: (err as Error).message, agentId: agentId.slice(0, 8) }, 'Global handler timed out'); }),
+          );
+        }
+      } catch (err) {
+        log.warn({ err: (err as Error).message, agentId: agentId.slice(0, 8) }, 'Global handler threw synchronously');
+      }
     }
 
     await Promise.allSettled(promises);
