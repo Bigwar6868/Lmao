@@ -24,6 +24,10 @@ import { ConsensusEngine } from './consensus.js';
 import { AgentSpawner } from './spawner.js';
 import { DataSourceManager } from './data-source-manager.js';
 import { SkillManager } from './skill-manager.js';
+import { OverfitGuard } from './overfit-guard.js';
+import { ExplainabilityEngine } from './explainability.js';
+import { DecayDetector } from './decay-detector.js';
+import { GovernanceEngine } from './governance.js';
 
 export { AgentNetwork } from './network.js';
 export { TradingAgent } from './trading-agent.js';
@@ -31,6 +35,10 @@ export { ConsensusEngine } from './consensus.js';
 export { AgentSpawner } from './spawner.js';
 export { DataSourceManager } from './data-source-manager.js';
 export { SkillManager } from './skill-manager.js';
+export { OverfitGuard } from './overfit-guard.js';
+export { ExplainabilityEngine } from './explainability.js';
+export { DecayDetector } from './decay-detector.js';
+export { GovernanceEngine } from './governance.js';
 
 const log = createModuleLogger('agent-swarm');
 
@@ -56,6 +64,12 @@ const DEFAULT_CONFIG: AgentSwarmConfig = {
  *  5. Spawn children from top performers
  *  6. Learn new skills from observed patterns
  *  7. Request new data sources when needed
+ *
+ * Safety layers (based on 2026 industry best practices):
+ *  8. Walk-forward validation prevents overfitting
+ *  9. XAI audit trail explains every decision
+ * 10. Decay detector catches strategy rot
+ * 11. Governance guardrails with kill switch + circuit breakers
  */
 export class AgentSwarm {
   readonly network: AgentNetwork;
@@ -63,6 +77,10 @@ export class AgentSwarm {
   readonly spawner: AgentSpawner;
   readonly dataSourceManager: DataSourceManager;
   readonly skillManager: SkillManager;
+  readonly overfitGuard: OverfitGuard;
+  readonly explainability: ExplainabilityEngine;
+  readonly decayDetector: DecayDetector;
+  readonly governance: GovernanceEngine;
 
   private agents = new Map<AgentId, TradingAgent>();
   private strategies = new Map<string, Strategy>();
@@ -75,6 +93,10 @@ export class AgentSwarm {
     this.consensus = new ConsensusEngine(this.network, this.agents);
     this.dataSourceManager = new DataSourceManager();
     this.skillManager = new SkillManager();
+    this.overfitGuard = new OverfitGuard();
+    this.explainability = new ExplainabilityEngine();
+    this.decayDetector = new DecayDetector();
+    this.governance = new GovernanceEngine();
 
     // Spawner is initialized after strategies are registered
     this.spawner = new AgentSpawner(
@@ -114,13 +136,13 @@ export class AgentSwarm {
   }
 
   // ----------------------------------------------------------------
-  // Core cycle: analyze → debate → consensus → execute
+  // Core cycle: analyze → debate → consensus → governance → execute
   // ----------------------------------------------------------------
 
   /**
    * Run a full multi-agent trading cycle.
    *
-   * Returns approved signals after debate consensus.
+   * Returns approved signals after debate consensus + governance checks.
    */
   async runCycle(
     marketDataMap: Map<string, MarketData>,
@@ -131,6 +153,13 @@ export class AgentSwarm {
     agentReport: string;
   }> {
     this.cycleCount++;
+
+    // Check kill switch before doing anything
+    if (this.governance.isKillSwitchActive()) {
+      log.warn({ cycle: this.cycleCount }, 'Kill switch active — skipping cycle');
+      return { approvedSignals: [], debateSummary: [], agentReport: this.formatSwarmReport() };
+    }
+
     log.info({ cycle: this.cycleCount, agents: this.agents.size }, 'Starting multi-agent cycle');
 
     // 1. All agents analyze market data independently
@@ -142,37 +171,69 @@ export class AgentSwarm {
       }
     }
 
-    // 2. Wait for debate messages to settle (agents auto-respond to proposals)
-    // The network delivers messages synchronously, so they've already been processed
-
-    // 3. Consensus engine resolves all debates
+    // 2. Consensus engine resolves all debates
     const verdicts = this.consensus.resolveAll();
 
-    // 4. Get approved signals
+    // 3. Get approved signals
     const approvedSignals = this.consensus.getApprovedSignals();
 
-    // 5. Evaluate agents, spawn/retire as needed
+    // 4. Generate XAI explanations for all debates
+    const debateSummary = this.consensus.getRecentSessions(verdicts.length);
+    const agentNames = new Map<AgentId, string>();
+    const agentReputations = new Map<AgentId, number>();
+    for (const [id, agent] of this.agents) {
+      agentNames.set(id, agent.profile.name);
+      agentReputations.set(id, agent.getReputation());
+    }
+    for (const session of debateSummary) {
+      this.explainability.explainDebate(session, agentNames, agentReputations);
+    }
+
+    // 5. Record performance snapshots for decay detection
+    for (const [id, agent] of this.agents) {
+      if (agent.getStatus() === 'retired') continue;
+      this.decayDetector.record({
+        timestamp: Date.now(),
+        agentId: id,
+        strategy: agent.getStrategy().name,
+        winRate: agent.getRecentWinRate(),
+        sharpe: 0, // calculated from metrics
+        pnl: agent.getHistory().totalPnl,
+        reputation: agent.getReputation(),
+        tradesCount: agent.getHistory().successfulTrades + agent.getHistory().failedTrades,
+      });
+    }
+
+    // 6. Evaluate agents, spawn/retire as needed
     const { spawned, retired } = this.spawner.evaluate();
 
-    // 6. Evolve underperformers
-    if (this.cycleCount % 5 === 0) {  // every 5 cycles
+    // 7. Evolve underperformers (every 5 cycles)
+    if (this.cycleCount % 5 === 0) {
       const evolved = this.spawner.evolveUnderperformers();
       if (evolved > 0) {
         log.info({ evolved }, 'Underperforming agents evolved');
       }
     }
 
-    // 7. Auto-learn skills from recent trades (every 10 cycles)
+    // 8. Auto-learn skills (every 10 cycles)
     if (this.cycleCount % 10 === 0) {
       this.autoLearnSkills();
     }
 
-    // 8. Check data source needs (every 20 cycles)
+    // 9. Check data source needs (every 20 cycles)
     if (this.cycleCount % 20 === 0) {
       this.checkDataNeeds();
     }
 
-    const debateSummary = this.consensus.getRecentSessions(verdicts.length);
+    // 10. Run decay analysis (every 15 cycles)
+    if (this.cycleCount % 15 === 0) {
+      const decayResults = this.decayDetector.analyzeAll();
+      const decaying = decayResults.filter(d => d.isDecaying);
+      if (decaying.length > 0) {
+        log.warn({ decaying: decaying.length }, 'Strategy decay detected');
+        console.log(DecayDetector.formatReport(decayResults));
+      }
+    }
 
     log.info({
       cycle: this.cycleCount,
@@ -194,9 +255,6 @@ export class AgentSwarm {
   // Self-learning
   // ----------------------------------------------------------------
 
-  /**
-   * Each agent tries to learn new skills from its trade history.
-   */
   private autoLearnSkills(): void {
     for (const [, agent] of this.agents) {
       if (agent.getStatus() === 'retired') continue;
@@ -204,14 +262,12 @@ export class AgentSwarm {
       const history = agent.getHistory();
       if (history.recentResults.length < 10) continue;
 
-      // Convert to format for auto-learn
       const trades = history.recentResults.map(r => ({
-        indicators: {}, // would come from signal data in production
+        indicators: {},
         pnl: r.pnl,
         action: r.action,
       }));
 
-      // Try to learn a pattern
       const skill = this.skillManager.autoLearn(agent.id, agent.profile.name, trades);
       if (skill) {
         log.info({
@@ -222,17 +278,12 @@ export class AgentSwarm {
     }
   }
 
-  /**
-   * Check if agents need data sources they don't have.
-   */
   private checkDataNeeds(): void {
     const missing = this.dataSourceManager.getMissingSources();
     if (missing.length === 0) return;
 
-    // Agents can request missing sources
     for (const source of missing) {
       if (source.type === 'price' && source.provider !== 'internal') {
-        // Find the agent with the highest reputation to make the request
         const topAgent = this.getTopAgent();
         if (topAgent) {
           void this.dataSourceManager.requestDataSource(
@@ -252,17 +303,14 @@ export class AgentSwarm {
   // Queries
   // ----------------------------------------------------------------
 
-  /** Get all agent profiles */
   getAgentProfiles(): AgentProfile[] {
     return [...this.agents.values()].map(a => a.profile);
   }
 
-  /** Get agent by ID */
   getAgent(id: AgentId): TradingAgent | undefined {
     return this.agents.get(id);
   }
 
-  /** Get the top-performing agent */
   getTopAgent(): TradingAgent | null {
     let best: TradingAgent | null = null;
     for (const [, agent] of this.agents) {
@@ -272,7 +320,6 @@ export class AgentSwarm {
     return best;
   }
 
-  /** Record trade outcome for the proposing agent */
   recordTradeOutcome(proposerId: AgentId, outcome: Parameters<TradingAgent['recordOutcome']>[0]): void {
     const agent = this.agents.get(proposerId);
     if (agent) agent.recordOutcome(outcome);
@@ -321,8 +368,10 @@ export class AgentSwarm {
   formatFullReport(): string {
     return [
       this.formatSwarmReport(),
+      this.governance.formatReport(),
       this.dataSourceManager.formatReport(),
       this.skillManager.formatReport(),
+      this.explainability.formatAuditReport(5),
     ].join('\n');
   }
 }

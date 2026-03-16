@@ -12,7 +12,7 @@ import { RegimeDetector } from './team/regime-detector/index.js';
 import { ScenarioSimulator } from './team/scenario-simulator/index.js';
 import { DiagnosticsEngine } from './team/diagnostics/index.js';
 import { OpportunityScanner } from './team/opportunity-scanner/index.js';
-import { AgentSwarm, ConsensusEngine } from './team/agent-network/index.js';
+import { AgentSwarm, ConsensusEngine, DecayDetector } from './team/agent-network/index.js';
 import { eventBus } from './shared/events.js';
 import { createModuleLogger } from './shared/logger.js';
 import type { AssetInfo, Timeframe, Signal, MarketData, Candle } from './shared/types.js';
@@ -314,8 +314,14 @@ export class TradingOrchestrator {
 
     console.log(DiagnosticsEngine.formatReport(report));
 
-    // Also show agent swarm status
+    // Agent swarm status + governance + XAI + decay
     console.log(this.swarm.formatFullReport());
+
+    // Decay analysis
+    const decayResults = this.swarm.decayDetector.analyzeAll();
+    if (decayResults.length > 0) {
+      console.log(DecayDetector.formatReport(decayResults));
+    }
 
     return { regime, simulation, report };
   }
