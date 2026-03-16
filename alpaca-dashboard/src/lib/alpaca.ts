@@ -11,7 +11,7 @@ const headers = {
 };
 
 async function alpacaFetch<T>(url: string): Promise<T> {
-  const res = await fetch(url, { headers, next: { revalidate: 30 } });
+  const res = await fetch(url, { headers, cache: "no-store" });
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Alpaca API error ${res.status}: ${text}`);
