@@ -52,8 +52,11 @@ export const config = {
   elitismCount: 2,
   generationInterval: 24 * 60 * 60 * 1000, // 24h
 
-  // Data
-  dataDir: new URL('../../data', import.meta.url).pathname,
+  // Data — works in both ESM (import.meta.url) and CJS (bundled) mode
+  dataDir: (() => {
+    try { return new URL('../../data', import.meta.url).pathname; }
+    catch { return require('node:path').resolve(__dirname, '../../data'); }
+  })(),
   cacheEnabled: true,
   cacheTtlMs: cloudMode ? 24 * 60 * 60 * 1000 : 60 * 60 * 1000, // 24h in cloud, 1h local
   networkTimeoutMs: cloudMode ? 2_000 : 10_000, // fast fail in cloud

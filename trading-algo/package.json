@@ -17,7 +17,15 @@
     "scan": "tsx src/scripts/scan.ts",
     "seed-data": "tsx src/scripts/seed-data.ts",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "bundle": "node scripts/bundle.mjs",
+    "release:build": "node scripts/bundle.mjs && node scripts/package-release.mjs"
+  },
+  "pkg": {
+    "assets": [
+      "data/**/*"
+    ],
+    "outputPath": "release"
   },
   "dependencies": {
     "axios": "^1.7.0",
@@ -30,6 +38,7 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/node-cron": "^3.0.11",
+    "esbuild": "^0.24.2",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"
