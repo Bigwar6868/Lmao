@@ -8,10 +8,14 @@ import type { MacroEnvironment, MacroIndicator } from '../../shared/types.js';
 import { FredClient } from './fred.js';
 import { EconomicCalendar } from './calendar.js';
 import { GeopoliticalAnalyzer } from './geopolitical.js';
+import { computeAdaptiveWeightsFromEnv, formatAdaptiveWeights } from './adaptive-weights.js';
+import type { AdaptiveWeights } from './adaptive-weights.js';
 
 export { FredClient } from './fred.js';
 export { EconomicCalendar } from './calendar.js';
 export { GeopoliticalAnalyzer } from './geopolitical.js';
+export { computeAdaptiveWeights, computeAdaptiveWeightsFromEnv, detectRegime, formatAdaptiveWeights } from './adaptive-weights.js';
+export type { MacroRegime, StrategyWeightProfile, RiskMultipliers, AdaptiveWeights } from './adaptive-weights.js';
 export type { FredSeriesId, EconomicEvent, GeopoliticalRisk, GeopoliticalFactor, PolicyChange, GlobalMacroSnapshot } from './types.js';
 
 const logger = createModuleLogger('macro-economist');
@@ -124,6 +128,37 @@ export class MacroEconomist {
    */
   isHighImpactPeriod() {
     return this.calendar.isHighImpactPeriod();
+  }
+
+  /**
+   * Compute adaptive strategy weights and risk multipliers
+   * based on the current macro regime. Works across all environments:
+   * goldilocks, reflation, stagflation, deflation, crisis, recovery, etc.
+   */
+  async getAdaptiveWeights(): Promise<AdaptiveWeights> {
+    const env = this.lastEnvironment ?? await this.getEnvironment();
+    const globalSnapshots = this.geopolitical.getGlobalMacro();
+    const activeFactors = this.geopolitical.getActiveFactors();
+    const policyChanges = this.geopolitical.getPolicyChanges();
+    const policyBias = this.geopolitical.getGlobalPolicyBias();
+    const highImpact = this.calendar.isHighImpactPeriod();
+
+    return computeAdaptiveWeightsFromEnv(
+      env,
+      globalSnapshots,
+      activeFactors,
+      policyChanges,
+      policyBias,
+      highImpact,
+    );
+  }
+
+  /**
+   * Get a formatted adaptive weights report.
+   */
+  async getAdaptiveWeightsReport(): Promise<string> {
+    const weights = await this.getAdaptiveWeights();
+    return formatAdaptiveWeights(weights);
   }
 
   /**
