@@ -67,11 +67,15 @@ jobs:
       - name: Install dependencies
         run: npm ci || npm install
 
-      - name: Bundle with esbuild
+      - name: Bundle with esbuild + copy pino externals
         run: node scripts/bundle.mjs
 
       - name: Compile binary with pkg
-        run: npx @yao-pkg/pkg dist/cli.cjs --target ${{ matrix.pkg_target }} --output dist/${{ matrix.asset_name }}${{ matrix.ext || '' }} --compress GZip
+        run: |
+          npx @yao-pkg/pkg dist/cli.cjs \
+            --target ${{ matrix.pkg_target }} \
+            --output dist/${{ matrix.asset_name }}${{ matrix.ext || '' }} \
+            --compress GZip
 
       - name: Create archive (tar.gz)
         if: matrix.archive == 'tar.gz'
@@ -153,12 +157,14 @@ jobs:
 
             ### Commands
             ```
+            auto-trade    Run 24/7 autonomous trading (all agents)
             backtest      Backtest all strategies
             paper-trade   Run a paper trading cycle
             analyze       Market analysis
             evolve        Evolve strategy parameters
             diagnose      System diagnostics
             scan          Scan for opportunities
+            seed-data     Seed cache with market data
             ```
 
             ### What's Inside
