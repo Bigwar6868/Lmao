@@ -2,13 +2,19 @@
 
 Fetches historical OHLCV candles and real-time pricing from OANDA's v20 API.
 Supports both practice (demo) and live environments.
+
+Best practices per https://developer.oanda.com/rest-live-v20/best-practices/:
+- Uses persistent HTTP connections via requests.Session (Keep-Alive by default in HTTP/1.1)
+- Respects rate limits: 120 req/s REST, max 2 new connections/s
+- Uses TransactionID-based account polling for state updates
+- count is NOT set when both from/to timestamps are specified
 """
 
 from __future__ import annotations
 
 import logging
+import threading
 import time
-from datetime import datetime, timezone
 from typing import Callable
 
 import requests
@@ -23,15 +29,21 @@ PRACTICE_URL = "https://api-fxpractice.oanda.com"
 LIVE_URL = "https://api-fxtrade.oanda.com"
 
 # Map system timeframes to OANDA granularity
+# Full list: S5, S10, S15, S30, M1, M2, M4, M5, M10, M15, M30, H1, H2, H3, H4, H6, H8, D, W, M
 TIMEFRAME_TO_GRANULARITY: dict[str, str] = {
     "1m": "M1",
     "5m": "M5",
     "15m": "M15",
+    "30m": "M30",
     "1h": "H1",
+    "2h": "H2",
     "4h": "H4",
     "1d": "D",
     "1w": "W",
 }
+
+# Max 100 requests per second on persistent connections (best practices)
+_RATE_LIMIT_INTERVAL = 1.0 / 100
 
 
 class OandaDataFetcher:
@@ -54,8 +66,20 @@ class OandaDataFetcher:
             "Accept-Datetime-Format": "UNIX",
         })
         self._instruments_cache: dict[str, str] = {}  # EUR/USD -> EUR_USD
+        self._last_request_time = 0.0
+        self._rate_lock = threading.Lock()
+        self._last_transaction_id: str | None = None  # For account state polling
 
         log.info("OandaDataFetcher initialised (live=%s)", self.is_live)
+
+    def _throttle(self) -> None:
+        """Rate-limit requests to stay within OANDA's 100 req/s on persistent connections."""
+        with self._rate_lock:
+            now = time.monotonic()
+            elapsed = now - self._last_request_time
+            if elapsed < _RATE_LIMIT_INTERVAL:
+                time.sleep(_RATE_LIMIT_INTERVAL - elapsed)
+            self._last_request_time = time.monotonic()
 
     # ------------------------------------------------------------------
     # Symbol Resolution
@@ -71,6 +95,7 @@ class OandaDataFetcher:
 
     def get_instruments(self) -> list[dict]:
         """Get list of tradeable instruments from OANDA."""
+        self._throttle()
         try:
             resp = self._session.get(
                 f"{self.base_url}/v3/accounts/{self.account_id}/instruments",
@@ -120,15 +145,21 @@ class OandaDataFetcher:
         params: dict = {
             "granularity": granularity,
             "price": "M",  # Midpoint
+            "dailyAlignment": 17,  # 5pm New York (OANDA default)
+            "alignmentTimezone": "America/New_York",
         }
 
         if from_timestamp and to_timestamp:
-            # OANDA expects seconds as UNIX timestamp strings
+            # Per OANDA docs: count must NOT be set when both from/to are specified
             params["from"] = str(from_timestamp / 1000)
             params["to"] = str(to_timestamp / 1000)
+        elif from_timestamp:
+            params["from"] = str(from_timestamp / 1000)
+            params["count"] = min(count, 5000)
         else:
             params["count"] = min(count, 5000)
 
+        self._throttle()
         try:
             resp = self._session.get(
                 f"{self.base_url}/v3/instruments/{instrument}/candles",
@@ -181,6 +212,7 @@ class OandaDataFetcher:
         """
         instruments = ",".join(self._to_oanda_instrument(s) for s in symbols)
 
+        self._throttle()
         try:
             resp = self._session.get(
                 f"{self.base_url}/v3/accounts/{self.account_id}/pricing",
@@ -207,7 +239,12 @@ class OandaDataFetcher:
             return {}
 
     def get_account_summary(self) -> dict:
-        """Get account summary (balance, equity, margin)."""
+        """Get account summary (balance, equity, margin).
+
+        Per OANDA best practices, this captures the lastTransactionID
+        for subsequent poll_account_updates() calls.
+        """
+        self._throttle()
         try:
             resp = self._session.get(
                 f"{self.base_url}/v3/accounts/{self.account_id}/summary",
@@ -216,6 +253,10 @@ class OandaDataFetcher:
             resp.raise_for_status()
             data = resp.json()
             acct = data.get("account", {})
+
+            # Store TransactionID for polling (per OANDA best practices)
+            self._last_transaction_id = data.get("lastTransactionID")
+
             return {
                 "balance": float(acct.get("balance", 0)),
                 "unrealized_pl": float(acct.get("unrealizedPL", 0)),
@@ -224,7 +265,57 @@ class OandaDataFetcher:
                 "margin_available": float(acct.get("marginAvailable", 0)),
                 "open_trade_count": int(acct.get("openTradeCount", 0)),
                 "currency": acct.get("currency", "USD"),
+                "last_transaction_id": self._last_transaction_id,
             }
         except Exception as e:
             log.error("OANDA account summary failed: %s", e)
             return {}
+
+    def poll_account_updates(self) -> dict | None:
+        """Poll for account changes since last TransactionID.
+
+        Per OANDA best practices: use an initial get_account_summary() to
+        snapshot state, then repeatedly call this to get incremental updates.
+        Returns None if no TransactionID is stored yet.
+        """
+        if not self._last_transaction_id:
+            return None
+
+        self._throttle()
+        try:
+            resp = self._session.get(
+                f"{self.base_url}/v3/accounts/{self.account_id}/changes",
+                params={"sinceTransactionID": self._last_transaction_id},
+                timeout=config.network_timeout_s,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            # Update stored TransactionID
+            self._last_transaction_id = data.get("lastTransactionID", self._last_transaction_id)
+
+            changes = data.get("changes", {})
+            state = data.get("state", {})
+
+            return {
+                "changes": {
+                    "orders_created": changes.get("ordersCreated", []),
+                    "orders_cancelled": changes.get("ordersCancelled", []),
+                    "orders_filled": changes.get("ordersFilled", []),
+                    "trades_opened": changes.get("tradesOpened", []),
+                    "trades_closed": changes.get("tradesClosed", []),
+                    "trades_reduced": changes.get("tradesReduced", []),
+                    "positions": changes.get("positions", []),
+                },
+                "state": {
+                    "unrealized_pl": float(state.get("unrealizedPL", 0)),
+                    "nav": float(state.get("NAV", 0)),
+                    "margin_used": float(state.get("marginUsed", 0)),
+                    "margin_available": float(state.get("marginAvailable", 0)),
+                    "position_value": float(state.get("positionValue", 0)),
+                },
+                "last_transaction_id": self._last_transaction_id,
+            }
+        except Exception as e:
+            log.error("OANDA poll updates failed: %s", e)
+            return None

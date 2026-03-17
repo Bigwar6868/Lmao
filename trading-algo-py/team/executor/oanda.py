@@ -1,4 +1,11 @@
-"""OANDA v20 live executor — executes trades via OANDA REST API."""
+"""OANDA v20 live executor — executes trades via OANDA REST API.
+
+Follows OANDA best practices:
+- Persistent HTTP connections via requests.Session
+- Rate limit handling with retry on HTTP 429
+- timeInForce set on stopLossOnFill / takeProfitOnFill
+- Positive units = buy, negative units = sell
+"""
 
 from __future__ import annotations
 
@@ -19,6 +26,10 @@ log = logging.getLogger(__name__)
 
 PRACTICE_URL = "https://api-fxpractice.oanda.com"
 LIVE_URL = "https://api-fxtrade.oanda.com"
+
+# Retry config for rate-limited requests (HTTP 429)
+_MAX_RETRIES = 3
+_RETRY_BACKOFF = [1, 2, 4]  # seconds
 
 
 class OandaExecutor:
@@ -42,6 +53,18 @@ class OandaExecutor:
         })
 
         log.info("OandaExecutor initialised (live=%s)", self.is_live)
+
+    def _request_with_retry(self, method: str, url: str, **kwargs) -> requests.Response:
+        """Make an HTTP request with retry on 429 (rate limited)."""
+        for attempt in range(_MAX_RETRIES + 1):
+            resp = getattr(self._session, method)(url, **kwargs)
+            if resp.status_code != 429:
+                return resp
+            if attempt < _MAX_RETRIES:
+                wait = _RETRY_BACKOFF[attempt]
+                log.warning("OANDA rate limited (429), retrying in %ds...", wait)
+                time.sleep(wait)
+        return resp  # Return last response even if still 429
 
     def _to_instrument(self, symbol: str) -> str:
         return symbol.replace("/", "_")
@@ -74,16 +97,18 @@ class OandaExecutor:
             }
         }
 
-        # Add stop loss
+        # Add stop loss (timeInForce required per OANDA docs)
         if risk.stop_loss_price > 0:
             order_body["order"]["stopLossOnFill"] = {
                 "price": f"{risk.stop_loss_price:.5f}",
+                "timeInForce": "GTC",
             }
 
-        # Add take profit
+        # Add take profit (timeInForce required per OANDA docs)
         if risk.take_profit_price > 0:
             order_body["order"]["takeProfitOnFill"] = {
                 "price": f"{risk.take_profit_price:.5f}",
+                "timeInForce": "GTC",
             }
 
         # Add client extensions for tracking
@@ -93,7 +118,8 @@ class OandaExecutor:
         }
 
         try:
-            resp = self._session.post(
+            resp = self._request_with_retry(
+                "post",
                 f"{self.base_url}/v3/accounts/{self.account_id}/orders",
                 json=order_body,
                 timeout=15,

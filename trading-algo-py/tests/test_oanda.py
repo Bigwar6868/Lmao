@@ -25,7 +25,12 @@ class TestOandaDataFetcher:
 
     def test_timeframe_mapping(self):
         assert TIMEFRAME_TO_GRANULARITY["1m"] == "M1"
+        assert TIMEFRAME_TO_GRANULARITY["5m"] == "M5"
+        assert TIMEFRAME_TO_GRANULARITY["15m"] == "M15"
+        assert TIMEFRAME_TO_GRANULARITY["30m"] == "M30"
         assert TIMEFRAME_TO_GRANULARITY["1h"] == "H1"
+        assert TIMEFRAME_TO_GRANULARITY["2h"] == "H2"
+        assert TIMEFRAME_TO_GRANULARITY["4h"] == "H4"
         assert TIMEFRAME_TO_GRANULARITY["1d"] == "D"
         assert TIMEFRAME_TO_GRANULARITY["1w"] == "W"
 
@@ -133,7 +138,8 @@ class TestOandaDataFetcher:
                 "marginAvailable": "45000.00",
                 "openTradeCount": 3,
                 "currency": "USD",
-            }
+            },
+            "lastTransactionID": "6373",
         }
         mock_session.get.return_value = mock_resp
 
@@ -145,6 +151,89 @@ class TestOandaDataFetcher:
         assert summary["unrealized_pl"] == pytest.approx(1234.56)
         assert summary["open_trade_count"] == 3
         assert summary["currency"] == "USD"
+        assert summary["last_transaction_id"] == "6373"
+
+    @patch("team.market_analyst.oanda.requests.Session")
+    def test_account_summary_stores_transaction_id(self, mock_session_cls):
+        mock_session = MagicMock()
+        mock_session_cls.return_value = mock_session
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "account": {"balance": "10000.00", "unrealizedPL": "0", "realizedPL": "0",
+                        "marginUsed": "0", "marginAvailable": "10000.00",
+                        "openTradeCount": 0, "currency": "USD"},
+            "lastTransactionID": "42",
+        }
+        mock_session.get.return_value = mock_resp
+
+        fetcher = OandaDataFetcher(api_token="test", account_id="101-001-123")
+        fetcher._session = mock_session
+
+        fetcher.get_account_summary()
+        assert fetcher._last_transaction_id == "42"
+
+    @patch("team.market_analyst.oanda.requests.Session")
+    def test_poll_account_updates(self, mock_session_cls):
+        mock_session = MagicMock()
+        mock_session_cls.return_value = mock_session
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "changes": {
+                "tradesOpened": [{"tradeID": "100"}],
+                "tradesClosed": [],
+                "tradesReduced": [],
+                "ordersCreated": [],
+                "ordersCancelled": [],
+                "ordersFilled": [],
+                "positions": [],
+            },
+            "state": {
+                "unrealizedPL": "50.00",
+                "NAV": "10050.00",
+                "marginUsed": "500.00",
+                "marginAvailable": "9550.00",
+                "positionValue": "500.00",
+            },
+            "lastTransactionID": "43",
+        }
+        mock_session.get.return_value = mock_resp
+
+        fetcher = OandaDataFetcher(api_token="test", account_id="101-001-123")
+        fetcher._session = mock_session
+        fetcher._last_transaction_id = "42"
+
+        result = fetcher.poll_account_updates()
+        assert result is not None
+        assert result["last_transaction_id"] == "43"
+        assert len(result["changes"]["trades_opened"]) == 1
+        assert result["state"]["nav"] == pytest.approx(10050.0)
+
+    def test_poll_without_transaction_id_returns_none(self):
+        fetcher = OandaDataFetcher(api_token="test", account_id="101-001-123")
+        assert fetcher.poll_account_updates() is None
+
+    @patch("team.market_analyst.oanda.requests.Session")
+    def test_fetch_candles_count_not_set_with_from_and_to(self, mock_session_cls):
+        """Per OANDA docs: count must NOT be specified when both from/to are given."""
+        mock_session = MagicMock()
+        mock_session_cls.return_value = mock_session
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"candles": []}
+        mock_session.get.return_value = mock_resp
+
+        fetcher = OandaDataFetcher(api_token="test", account_id="101-001-123")
+        fetcher._session = mock_session
+
+        fetcher.fetch_candles("EUR/USD", "1h", from_timestamp=1000000, to_timestamp=2000000)
+
+        call_args = mock_session.get.call_args
+        params = call_args.kwargs.get("params") or call_args[1].get("params")
+        assert "count" not in params
+        assert "from" in params
+        assert "to" in params
 
 
 # ============================================================
@@ -203,7 +292,9 @@ class TestOandaExecutor:
         assert order_req["instrument"] == "EUR_USD"
         assert int(order_req["units"]) > 0  # Positive = buy
         assert "stopLossOnFill" in order_req
+        assert order_req["stopLossOnFill"]["timeInForce"] == "GTC"
         assert "takeProfitOnFill" in order_req
+        assert order_req["takeProfitOnFill"]["timeInForce"] == "GTC"
 
     @patch("team.executor.oanda.requests.Session")
     def test_execute_sell_order(self, mock_session_cls):
@@ -308,3 +399,33 @@ class TestOandaExecutor:
         body = call_args.kwargs.get("json") or call_args[1].get("json")
         assert "stopLoss" in body
         assert "takeProfit" in body
+
+    @patch("team.executor.oanda.time.sleep")
+    @patch("team.executor.oanda.requests.Session")
+    def test_retry_on_429(self, mock_session_cls, mock_sleep):
+        """Test that 429 rate limit triggers retry with backoff."""
+        mock_session = MagicMock()
+        mock_session_cls.return_value = mock_session
+
+        # First call returns 429, second succeeds
+        mock_429 = MagicMock()
+        mock_429.status_code = 429
+
+        mock_ok = MagicMock()
+        mock_ok.status_code = 201
+        mock_ok.json.return_value = {
+            "orderCreateTransaction": {"id": "100"},
+            "orderFillTransaction": {
+                "orderID": "100", "price": "1.08520",
+                "tradeOpened": {"tradeID": "200", "units": "46082"},
+            },
+        }
+        mock_session.post.side_effect = [mock_429, mock_ok]
+
+        executor = OandaExecutor(api_token="test", account_id="101-001-123")
+        executor._session = mock_session
+
+        order = executor.execute_order(_make_signal(), _make_risk())
+        assert order.filled_price == pytest.approx(1.0852)
+        assert mock_session.post.call_count == 2
+        mock_sleep.assert_called_once_with(1)  # First backoff = 1s
