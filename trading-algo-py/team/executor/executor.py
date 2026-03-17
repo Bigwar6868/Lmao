@@ -1,4 +1,4 @@
-"""Trade executor — routes orders to paper or live engine."""
+"""Trade executor — routes orders to paper, OANDA, or IC Markets engine."""
 
 from __future__ import annotations
 
@@ -12,22 +12,45 @@ log = logging.getLogger(__name__)
 
 
 class Executor:
-    """Routes trades to paper or live execution engine."""
+    """Routes trades to paper or live execution engine.
+
+    Live broker selection:
+    - TRADING_BROKER=oanda -> OANDA v20 REST API
+    - TRADING_BROKER=icmarkets -> IC Markets cTrader Open API
+    - Default: auto-detect based on available credentials
+    """
 
     def __init__(self) -> None:
-        self.mode = config.trading_mode
+        self.mode = config.trading_mode  # "paper" or "live"
         self.paper = PaperTrader(initial_capital=config.initial_capital)
         self._live = None  # Lazy-init
 
         log.info("Executor initialised (mode=%s)", self.mode)
 
     def _get_live(self):
-        """Lazy-initialise live executor."""
-        if self._live is None:
+        """Lazy-initialise live executor based on broker config."""
+        if self._live is not None:
+            return self._live
+
+        broker = getattr(config, "trading_broker", "auto")
+
+        if broker == "oanda" or (broker == "auto" and config.has_oanda_credentials):
+            from team.executor.oanda import OandaExecutor
+            self._live = OandaExecutor()
+            log.info("Live executor: OANDA")
+        elif broker == "icmarkets" or (broker == "auto" and config.has_ctrader_credentials):
             from team.executor.live import LiveExecutor
             self._live = LiveExecutor()
             if not self._live.connect():
                 raise RuntimeError("Failed to connect to IC Markets")
+            log.info("Live executor: IC Markets")
+        else:
+            raise RuntimeError(
+                "No live broker credentials configured. "
+                "Set OANDA_API_TOKEN + OANDA_ACCOUNT_ID or "
+                "CTRADER_CLIENT_ID + CTRADER_CLIENT_SECRET + CTRADER_ACCESS_TOKEN + CTRADER_ACCOUNT_ID"
+            )
+
         return self._live
 
     def execute(self, signal: Signal, risk: RiskAssessment) -> dict:

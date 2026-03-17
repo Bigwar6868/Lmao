@@ -34,6 +34,11 @@ class Config:
     ctrader_account_id: str = field(default_factory=lambda: os.environ.get("CTRADER_ACCOUNT_ID", ""))
     ctrader_is_live: bool = field(default_factory=lambda: os.environ.get("CTRADER_IS_LIVE", "false").lower() == "true")
 
+    # OANDA v20 API
+    oanda_api_token: str = field(default_factory=lambda: os.environ.get("OANDA_API_TOKEN", ""))
+    oanda_account_id: str = field(default_factory=lambda: os.environ.get("OANDA_ACCOUNT_ID", ""))
+    oanda_is_live: bool = field(default_factory=lambda: os.environ.get("OANDA_IS_LIVE", "false").lower() == "true")
+
     # Legacy API Keys (for fallback data sources)
     alpha_vantage_key: str = field(default_factory=lambda: os.environ.get("ALPHA_VANTAGE_API_KEY", "demo"))
     binance_api_key: str = field(default_factory=lambda: os.environ.get("BINANCE_API_KEY", ""))
@@ -41,6 +46,7 @@ class Config:
 
     # Trading
     trading_mode: str = field(default_factory=lambda: os.environ.get("TRADING_MODE", "paper"))
+    trading_broker: str = field(default_factory=lambda: os.environ.get("TRADING_BROKER", "auto"))  # oanda, icmarkets, auto
     default_timeframe: str = field(default_factory=lambda: os.environ.get("DEFAULT_TIMEFRAME", "1h"))
     initial_capital: float = field(default_factory=lambda: float(os.environ.get("INITIAL_CAPITAL", "10000")))
     max_position_size_pct: float = field(default_factory=lambda: float(os.environ.get("MAX_POSITION_SIZE_PCT", "5")))
@@ -76,6 +82,10 @@ class Config:
     @property
     def has_ctrader_credentials(self) -> bool:
         return bool(self.ctrader_client_id and self.ctrader_client_secret and self.ctrader_access_token and self.ctrader_account_id)
+
+    @property
+    def has_oanda_credentials(self) -> bool:
+        return bool(self.oanda_api_token and self.oanda_account_id)
 
 
 config = Config()

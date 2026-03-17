@@ -20,13 +20,29 @@ log = logging.getLogger(__name__)
 
 
 class MarketAnalyst:
-    """Fetches and caches market data from IC Markets or synthetic fallback."""
+    """Fetches and caches market data from brokers or synthetic fallback.
+
+    Data source priority:
+    1. OANDA v20 REST API (if credentials configured)
+    2. IC Markets cTrader Open API (if credentials configured)
+    3. Synthetic data (fallback)
+    """
 
     def __init__(self) -> None:
         self.cache_dir = Path(config.data_dir) / "historical"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
-        # Lazy-init IC Markets fetcher only when credentials available
+        # Lazy-init OANDA fetcher
+        self._oanda = None
+        if config.has_oanda_credentials and not config.cloud_mode:
+            try:
+                from team.market_analyst.oanda import OandaDataFetcher
+                self._oanda = OandaDataFetcher()
+                log.info("OANDA data fetcher ready")
+            except Exception as e:
+                log.warning("OANDA init failed: %s", e)
+
+        # Lazy-init IC Markets fetcher
         self._icm = None
         if config.has_ctrader_credentials and not config.cloud_mode:
             try:
@@ -38,7 +54,7 @@ class MarketAnalyst:
             except Exception as e:
                 log.warning("IC Markets init failed: %s — using synthetic data", e)
 
-        log.info("MarketAnalyst initialised (icmarkets=%s)", self._icm is not None)
+        log.info("MarketAnalyst initialised (oanda=%s, icmarkets=%s)", self._oanda is not None, self._icm is not None)
 
     # ------------------------------------------------------------------
     # Cache
@@ -102,6 +118,16 @@ class MarketAnalyst:
     # Fetching
     # ------------------------------------------------------------------
 
+    def _fetch_from_oanda(self, asset: AssetInfo, timeframe: str) -> list[Candle]:
+        """Fetch candles from OANDA v20 REST API."""
+        if self._oanda is None:
+            return []
+        try:
+            return self._oanda.fetch_candles(asset.symbol, timeframe)
+        except Exception as e:
+            log.warning("OANDA fetch failed for %s: %s", asset.symbol, e)
+            return []
+
     def _fetch_from_icmarkets(self, asset: AssetInfo, timeframe: str) -> list[Candle]:
         """Fetch candles from IC Markets via cTrader Open API."""
         if self._icm is None:
@@ -134,8 +160,10 @@ class MarketAnalyst:
 
         log.info("Fetching %s %s (%s)", asset.symbol, timeframe, asset.asset_class.value)
 
-        # Try IC Markets first, fall back to synthetic
-        candles = self._fetch_from_icmarkets(asset, timeframe)
+        # Try OANDA first, then IC Markets, fall back to synthetic
+        candles = self._fetch_from_oanda(asset, timeframe)
+        if not candles:
+            candles = self._fetch_from_icmarkets(asset, timeframe)
         if not candles:
             log.info("Using synthetic data for %s", asset.symbol)
             candles = self._fetch_synthetic(asset, timeframe)
