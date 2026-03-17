@@ -19,11 +19,6 @@ export type AgentRole = 'ceo' | 'team-lead' | 'member';
 /** Message types for inter-agent communication */
 export type MessageType =
   // Trade flow
-  | 'proposal'       // Agent proposes a trade
-  | 'doubt'          // Agent challenges another's proposal
-  | 'support'        // Agent supports another's proposal
-  | 'counter'        // Agent proposes alternative to another's proposal
-  | 'verdict'        // Consensus engine final decision
   | 'performance'    // Agent broadcasts its own metrics
   | 'alert'          // Agent raises a concern (regime shift, risk, etc.)
   | 'spawn'          // System spawns a new agent
@@ -53,11 +48,6 @@ export interface AgentMessage {
 
 /** Typed payload variants */
 export type AgentMessagePayload =
-  | TradeProposal
-  | TradeDoubt
-  | TradeSupport
-  | TradeCounter
-  | DebateVerdict
   | PerformanceBroadcast
   | AlertPayload
   | SpawnPayload
@@ -70,51 +60,6 @@ export type AgentMessagePayload =
   | DiscussPayload
   | QuestionPayload
   | AnswerPayload;
-
-/** An agent proposes a trade */
-export interface TradeProposal {
-  type: 'proposal';
-  signal: Signal;
-  conviction: number;          // 0-1, how strongly the agent believes
-  reasoning: string;
-  indicators: Record<string, number>;
-}
-
-/** An agent doubts another's trade */
-export interface TradeDoubt {
-  type: 'doubt';
-  proposalId: string;
-  reason: string;
-  counterEvidence: Record<string, number>;  // indicators that disagree
-  severity: 'mild' | 'strong' | 'veto';    // how strongly it disagrees
-}
-
-/** An agent supports a proposal */
-export interface TradeSupport {
-  type: 'support';
-  proposalId: string;
-  reason: string;
-  additionalConfidence: number;  // how much extra confidence to add
-}
-
-/** An agent proposes a counter-trade */
-export interface TradeCounter {
-  type: 'counter';
-  proposalId: string;
-  alternativeSignal: Signal;
-  reason: string;
-}
-
-/** Final verdict from consensus engine */
-export interface DebateVerdict {
-  type: 'verdict';
-  proposalId: string;
-  approved: boolean;
-  finalConfidence: number;
-  supporters: AgentId[];
-  doubters: AgentId[];
-  reason: string;
-}
 
 /** Agent performance broadcast */
 export interface PerformanceBroadcast {
@@ -169,9 +114,8 @@ export interface AgentProfile {
 
 /** Rolling performance history for an agent */
 export interface AgentPerformanceHistory {
-  totalProposals: number;
-  approvedProposals: number;
-  successfulTrades: number;         // proposals that led to profitable trades
+  totalSignals: number;
+  successfulTrades: number;         // signals that led to profitable trades
   failedTrades: number;
   totalPnl: number;
   recentResults: TradeOutcome[];    // last N trade outcomes
@@ -192,24 +136,6 @@ export interface TradeOutcome {
   pnl: number;
   pnlPct: number;
   timestamp: number;
-  wasDoubted: boolean;              // was this trade challenged?
-  doubtWasCorrect: boolean;         // if doubted, was the doubt valid?
-}
-
-// ============================================================
-// Debate Session
-// ============================================================
-
-/** A complete debate session around a trade proposal */
-export interface DebateSession {
-  id: string;
-  proposal: AgentMessage;
-  responses: AgentMessage[];        // doubts, supports, counters
-  verdict: DebateVerdict | null;
-  asset: AssetInfo;
-  startedAt: number;
-  resolvedAt: number | null;
-  outcome: TradeOutcome | null;     // filled after trade completes
 }
 
 // ============================================================
@@ -223,8 +149,6 @@ export interface AgentSwarmConfig {
   retireThreshold: number;          // reputation below this → retire
   spawnCooldownMs: number;          // min time between spawns
   evaluationWindowSize: number;     // number of recent trades to evaluate
-  doubtThreshold: number;           // min confidence diff to trigger doubt
-  consensusQuorum: number;          // fraction of agents needed for consensus
 }
 
 // ============================================================

@@ -38,16 +38,15 @@ describe('AgentNetwork', () => {
       network.register('receiver');
 
       const received: string[] = [];
-      network.on('receiver', 'proposal', (msg) => {
+      network.on('receiver', 'alert', (msg) => {
         received.push(msg.from);
       });
 
-      await network.broadcast('sender', 'proposal', {
-        type: 'proposal',
-        signal: {} as any,
-        conviction: 0.8,
-        reasoning: 'test',
-        indicators: {},
+      await network.broadcast('sender', 'alert', {
+        type: 'alert',
+        severity: 'info',
+        message: 'test signal',
+        data: {},
       });
 
       expect(received).toContain('sender');
@@ -58,16 +57,15 @@ describe('AgentNetwork', () => {
       network.register('agent-1');
 
       let selfReceived = false;
-      network.on('agent-1', 'proposal', () => {
+      network.on('agent-1', 'alert', () => {
         selfReceived = true;
       });
 
-      await network.broadcast('agent-1', 'proposal', {
-        type: 'proposal',
-        signal: {} as any,
-        conviction: 0.8,
-        reasoning: 'test',
-        indicators: {},
+      await network.broadcast('agent-1', 'alert', {
+        type: 'alert',
+        severity: 'info',
+        message: 'test',
+        data: {},
       });
 
       expect(selfReceived).toBe(false);
@@ -82,15 +80,14 @@ describe('AgentNetwork', () => {
       let targetReceived = false;
       let otherReceived = false;
 
-      network.on('target', 'doubt', () => { targetReceived = true; });
-      network.on('other', 'doubt', () => { otherReceived = true; });
+      network.on('target', 'report', () => { targetReceived = true; });
+      network.on('other', 'report', () => { otherReceived = true; });
 
-      await network.unicast('sender', 'target', 'doubt', {
-        type: 'doubt',
-        proposalId: '123',
-        reason: 'test',
-        counterEvidence: {},
-        severity: 'mild',
+      await network.unicast('sender', 'target', 'report', {
+        type: 'report',
+        reportType: 'analysis',
+        summary: 'test report',
+        data: {},
       });
 
       expect(targetReceived).toBe(true);
@@ -121,12 +118,11 @@ describe('AgentNetwork', () => {
       const network = new AgentNetwork();
       network.register('agent-1');
 
-      await network.broadcast('agent-1', 'proposal', {
-        type: 'proposal',
-        signal: {} as any,
-        conviction: 0.5,
-        reasoning: 'test',
-        indicators: {},
+      await network.broadcast('agent-1', 'alert', {
+        type: 'alert',
+        severity: 'info',
+        message: 'test signal',
+        data: {},
       });
 
       const recent = network.getRecentMessages(10);
@@ -134,29 +130,29 @@ describe('AgentNetwork', () => {
       expect(recent[0].from).toBe('agent-1');
     });
 
-    it('should retrieve debate messages', async () => {
+    it('should retrieve recent messages', async () => {
       const network = new AgentNetwork();
-      network.register('proposer');
-      network.register('doubter');
+      network.register('agent-a');
+      network.register('agent-b');
 
-      const proposal = await network.broadcast('proposer', 'proposal', {
-        type: 'proposal',
-        signal: {} as any,
-        conviction: 0.8,
-        reasoning: 'bullish',
-        indicators: {},
+      await network.broadcast('agent-a', 'alert', {
+        type: 'alert',
+        severity: 'info',
+        message: 'first',
+        data: {},
       });
 
-      await network.broadcast('doubter', 'doubt', {
-        type: 'doubt',
-        proposalId: proposal.id,
-        reason: 'bearish divergence',
-        counterEvidence: {},
-        severity: 'strong',
-      }, proposal.id);
+      await network.broadcast('agent-b', 'report', {
+        type: 'report',
+        reportType: 'status',
+        summary: 'second',
+        data: {},
+      });
 
-      const debateMsgs = network.getDebateMessages(proposal.id);
-      expect(debateMsgs.length).toBe(2);
+      const msgs = network.getRecentMessages(10);
+      expect(msgs.length).toBe(2);
+      expect(msgs[0].from).toBe('agent-a');
+      expect(msgs[1].from).toBe('agent-b');
     });
   });
 });

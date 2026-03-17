@@ -14,11 +14,7 @@ import type {
   AgentId,
   AgentProfile,
   AgentStatus,
-  AgentMessage,
   AgentPerformanceHistory,
-  TradeProposal,
-  TradeDoubt,
-  TradeSupport,
   TradeOutcome,
 } from '../../shared/agent-types.js';
 import { generateId, roundTo } from '../../shared/utils.js';
@@ -30,11 +26,12 @@ const log = createModuleLogger('trading-agent');
 /**
  * A TradingAgent is an autonomous wrapper around a Strategy.
  * It can:
- *  - Propose trades by analyzing market data
- *  - Doubt other agents' proposals when its own analysis disagrees
- *  - Support proposals that align with its view
+ *  - Analyze market data and generate signals
  *  - Track its own performance and reputation
  *  - Self-evolve its DNA when performance drops
+ *
+ * Post-trade review and optimization happen at the team level
+ * after every executed trade.
  */
 export class TradingAgent {
   readonly id: AgentId;
@@ -49,8 +46,7 @@ export class TradingAgent {
 
   /** Rolling performance history */
   private history: AgentPerformanceHistory = {
-    totalProposals: 0,
-    approvedProposals: 0,
+    totalSignals: 0,
     successfulTrades: 0,
     failedTrades: 0,
     totalPnl: 0,
@@ -61,9 +57,6 @@ export class TradingAgent {
     peakReputation: 65,
     lastEvaluatedAt: Date.now(),
   };
-
-  /** Track pending proposals */
-  private pendingProposals = new Map<string, Signal>();
 
   constructor(opts: {
     strategy: Strategy;
@@ -82,212 +75,43 @@ export class TradingAgent {
 
     if (opts.reputation !== undefined) this.reputation = opts.reputation;
 
-    // Register on network
+    // Register on network for team communication
     this.network.register(this.id);
-
-    // Listen for messages directed at us
-    this.network.on(this.id, 'doubt', (msg) => this.handleDoubt(msg));
-    this.network.on(this.id, 'support', (msg) => this.handleSupport(msg));
-    this.network.on(this.id, 'verdict', (msg) => this.handleVerdict(msg));
-
-    // Listen for all proposals (to decide whether to doubt/support)
-    this.network.on(this.id, 'proposal', (msg) => this.evaluateProposal(msg));
 
     log.info({ id: this.id, name: this.name, strategy: this.strategy.name }, 'Agent created');
   }
 
   // ----------------------------------------------------------------
-  // Core: Analyze and Propose
+  // Core: Analyze and Return Signals
   // ----------------------------------------------------------------
 
   /**
-   * Analyze market data and propose trades if signals are found.
-   * This is the agent's main action each cycle.
+   * Analyze market data and return signals directly.
+   * No debate — signals are evaluated by the team and sent to risk/executor.
    */
   async analyze(data: MarketData, macro?: MacroEnvironment): Promise<Signal[]> {
     if (this.status === 'retired') return [];
 
     const signals = await this.strategy.analyze(data, macro);
 
-    // Only propose if agent has actionable signals
+    const actionableSignals: Signal[] = [];
     for (const signal of signals) {
       if (signal.action === 'HOLD') continue;
 
       // Scale confidence by reputation
       const adjustedConfidence = signal.confidence * (this.reputation / 100);
-
-      const proposal: TradeProposal = {
-        type: 'proposal',
-        signal: { ...signal, confidence: adjustedConfidence },
-        conviction: this.calculateConviction(signal),
-        reasoning: this.buildReasoning(signal),
-        indicators: signal.indicators,
-      };
-
-      const msg = await this.network.broadcast(this.id, 'proposal', proposal);
-      this.pendingProposals.set(msg.id, signal);
-      this.history.totalProposals++;
+      actionableSignals.push({ ...signal, confidence: adjustedConfidence });
+      this.history.totalSignals++;
 
       log.info({
         agent: this.name,
         action: signal.action,
         asset: signal.asset.symbol,
         confidence: roundTo(adjustedConfidence, 2),
-        conviction: roundTo(proposal.conviction, 2),
-      }, 'Trade proposed');
+      }, 'Signal generated');
     }
 
-    return signals;
-  }
-
-  // ----------------------------------------------------------------
-  // Debate: Evaluate Others' Proposals
-  // ----------------------------------------------------------------
-
-  /**
-   * When another agent proposes a trade, this agent evaluates it.
-   * If its own analysis disagrees, it raises a doubt.
-   * If it agrees, it sends support.
-   */
-  private async evaluateProposal(msg: AgentMessage): Promise<void> {
-    if (this.status === 'retired') return;
-    const proposal = msg.payload as TradeProposal;
-    const theirSignal = proposal.signal;
-
-    // Check if our strategy even covers this asset
-    if (!this.strategy.config.assetClasses.includes(theirSignal.asset.assetClass)) return;
-    if (!this.strategy.config.timeframes.includes(theirSignal.timeframe)) return;
-
-    // Compare with our own conviction on this asset
-    // We don't re-analyze (too expensive), but we check our indicators
-    const ourView = this.getOurView(theirSignal);
-
-    if (ourView === null) return; // no opinion
-
-    // DOUBT: our view disagrees with the proposal
-    if (ourView.disagrees) {
-      const doubt: TradeDoubt = {
-        type: 'doubt',
-        proposalId: msg.id,
-        reason: ourView.reason,
-        counterEvidence: ourView.counterIndicators,
-        severity: this.reputation > 70 ? 'strong' : 'mild',
-      };
-
-      await this.network.unicast(this.id, msg.from, 'doubt', doubt, msg.id);
-
-      log.info({
-        doubter: this.name,
-        proposer: msg.from.slice(0, 8),
-        asset: theirSignal.asset.symbol,
-        reason: ourView.reason,
-      }, 'Doubt raised');
-    }
-    // SUPPORT: our view agrees
-    else if (ourView.agrees) {
-      const support: TradeSupport = {
-        type: 'support',
-        proposalId: msg.id,
-        reason: ourView.reason,
-        additionalConfidence: (this.reputation / 100) * 0.15,
-      };
-
-      await this.network.unicast(this.id, msg.from, 'support', support, msg.id);
-    }
-  }
-
-  /**
-   * Quick heuristic: does our strategy disagree with this signal?
-   * Uses recent indicator memory instead of full re-analysis.
-   */
-  private getOurView(theirSignal: Signal): {
-    disagrees: boolean;
-    agrees: boolean;
-    reason: string;
-    counterIndicators: Record<string, number>;
-  } | null {
-    // Use the proposal's own indicators to check for contradictions
-    const ind = theirSignal.indicators;
-
-    // RSI-based doubt
-    if (ind.rsi !== undefined) {
-      if (theirSignal.action === 'BUY' && ind.rsi > 75) {
-        return {
-          disagrees: true, agrees: false,
-          reason: `RSI at ${roundTo(ind.rsi, 1)} — overbought, risky to buy`,
-          counterIndicators: { rsi: ind.rsi },
-        };
-      }
-      if (theirSignal.action === 'SELL' && ind.rsi < 25) {
-        return {
-          disagrees: true, agrees: false,
-          reason: `RSI at ${roundTo(ind.rsi, 1)} — oversold, risky to sell`,
-          counterIndicators: { rsi: ind.rsi },
-        };
-      }
-    }
-
-    // EMA alignment doubt
-    if (ind.fastEma !== undefined && ind.slowEma !== undefined) {
-      const emaAligned = theirSignal.action === 'BUY'
-        ? ind.fastEma > ind.slowEma
-        : ind.fastEma < ind.slowEma;
-
-      if (!emaAligned) {
-        return {
-          disagrees: true, agrees: false,
-          reason: `EMA trend opposes ${theirSignal.action} — fast EMA ${theirSignal.action === 'BUY' ? 'below' : 'above'} slow EMA`,
-          counterIndicators: { fastEma: ind.fastEma, slowEma: ind.slowEma },
-        };
-      }
-    }
-
-    // Confidence too low
-    if (theirSignal.confidence < 0.4) {
-      return {
-        disagrees: true, agrees: false,
-        reason: `Low confidence (${roundTo(theirSignal.confidence * 100, 0)}%) — not convincing`,
-        counterIndicators: {},
-      };
-    }
-
-    // Support if confidence is strong
-    if (theirSignal.confidence > 0.65) {
-      return {
-        disagrees: false, agrees: true,
-        reason: `Strong signal confidence (${roundTo(theirSignal.confidence * 100, 0)}%), indicators align`,
-        counterIndicators: {},
-      };
-    }
-
-    return null; // no opinion
-  }
-
-  // ----------------------------------------------------------------
-  // Handle Responses
-  // ----------------------------------------------------------------
-
-  private handleDoubt(msg: AgentMessage): void {
-    const doubt = msg.payload as TradeDoubt;
-    log.debug({
-      agent: this.name,
-      doubter: msg.from.slice(0, 8),
-      severity: doubt.severity,
-      reason: doubt.reason,
-    }, 'Received doubt');
-  }
-
-  private handleSupport(msg: AgentMessage): void {
-    const support = msg.payload as TradeSupport;
-    log.debug({
-      agent: this.name,
-      supporter: msg.from.slice(0, 8),
-      extraConfidence: support.additionalConfidence,
-    }, 'Received support');
-  }
-
-  private handleVerdict(msg: AgentMessage): void {
-    // Verdict handled by consensus engine
+    return actionableSignals;
   }
 
   // ----------------------------------------------------------------
@@ -295,7 +119,7 @@ export class TradingAgent {
   // ----------------------------------------------------------------
 
   /**
-   * Record the outcome of a trade this agent proposed.
+   * Record the outcome of a trade this agent's signal led to.
    * Updates reputation based on result.
    */
   recordOutcome(outcome: TradeOutcome): void {
@@ -316,17 +140,6 @@ export class TradingAgent {
       this.history.lossStreaks = Math.max(this.history.lossStreaks, Math.abs(this.history.currentStreak));
       // Reputation penalty
       this.reputation = Math.max(0, this.reputation - Math.min(8, Math.abs(outcome.pnlPct) * 0.8));
-    }
-
-    // Bonus/penalty for doubted trades
-    if (outcome.wasDoubted) {
-      if (outcome.doubtWasCorrect) {
-        // The doubter was right — penalize proposer extra
-        this.reputation = Math.max(0, this.reputation - 3);
-      } else {
-        // The doubter was wrong — reward proposer for standing firm
-        this.reputation = Math.min(100, this.reputation + 2);
-      }
     }
 
     this.history.totalPnl += outcome.pnl;
@@ -406,23 +219,6 @@ export class TradingAgent {
   // ----------------------------------------------------------------
   // Internal Helpers
   // ----------------------------------------------------------------
-
-  private calculateConviction(signal: Signal): number {
-    // Conviction = base confidence × reputation factor × streak bonus
-    let conviction = signal.confidence;
-    conviction *= (this.reputation / 100);
-    if (this.history.currentStreak > 3) conviction *= 1.1;
-    if (this.history.currentStreak < -3) conviction *= 0.8;
-    return Math.min(1, Math.max(0, conviction));
-  }
-
-  private buildReasoning(signal: Signal): string {
-    const parts = [signal.reason];
-    if (this.history.currentStreak > 3) parts.push(`(${this.history.currentStreak}-win streak)`);
-    if (this.reputation > 75) parts.push('(high reputation)');
-    if (this.reputation < 30) parts.push('(low confidence — on probation)');
-    return parts.join(' ');
-  }
 
   private set peakReputation(value: number) {
     this.history.peakReputation = value;

@@ -3,11 +3,9 @@ import { allAssets } from './config/assets.js';
 import { AgentNetwork } from './team/agent-network/network.js';
 import { TradingAgent } from './team/agent-network/trading-agent.js';
 import { AgentSpawner } from './team/agent-network/spawner.js';
-import { ExplainabilityEngine } from './team/agent-network/explainability.js';
 import { DecayDetector } from './team/agent-network/decay-detector.js';
-import { ConsensusEngine } from './team/agent-network/consensus.js';
 import { CEOAgent } from './team/ceo/index.js';
-import { TradingTeam } from './team/ceo/trading-team.js';
+import { TradingTeam, type TradeReviewResult } from './team/ceo/trading-team.js';
 import { ResearchTeam } from './team/ceo/research-team.js';
 import { RiskTeam } from './team/ceo/risk-team.js';
 import { EvolutionTeam } from './team/ceo/evolution-team.js';
@@ -48,7 +46,6 @@ export class TradingSystem {
   private opsTeam: OpsTeam;
 
   // Agent management
-  private explainability = new ExplainabilityEngine();
   private spawner!: AgentSpawner;
   private agents = new Map<AgentId, TradingAgent>();
   private strategies = new Map<string, import('./shared/types.js').Strategy>();
@@ -100,19 +97,17 @@ export class TradingSystem {
       this.strategies.set(strategy.name, strategy);
     }
 
-    // 5. Spawn initial trading agents (2 per strategy for debate)
+    // 5. Spawn initial trading agents (1 per strategy — no debate, direct signals)
     for (const strategy of strategyList) {
-      for (let i = 0; i < 2; i++) {
-        const agentName = `${strategy.name}-prime${i > 0 ? `-${i}` : ''}`;
-        const agent = new TradingAgent({
-          strategy,
-          network: this.network,
-          name: agentName,
-        });
-        this.agents.set(agent.id, agent);
-        this.tradingTeam.registerAgent(agent);
-        registerAgentName(agent.id, agentName);
-      }
+      const agentName = `${strategy.name}-prime`;
+      const agent = new TradingAgent({
+        strategy,
+        network: this.network,
+        name: agentName,
+      });
+      this.agents.set(agent.id, agent);
+      this.tradingTeam.registerAgent(agent);
+      registerAgentName(agent.id, agentName);
     }
 
     // 6. Create spawner for dynamic agent management
@@ -120,13 +115,11 @@ export class TradingSystem {
       this.network, this.agents, this.strategies,
       {
         maxAgents: 30,
-        minAgents: 2,
+        minAgents: 1,
         probationThreshold: 30,
         retireThreshold: 15,
         spawnCooldownMs: 30_000,
         evaluationWindowSize: 20,
-        doubtThreshold: 0.2,
-        consensusQuorum: 0.5,
       },
     );
 
@@ -202,7 +195,7 @@ export class TradingSystem {
       'Autonomously decide what to trade and when. Maximize risk-adjusted returns.',
       [
         'Select the best assets to trade based on research data and market conditions',
-        'Run debate/consensus among agents before executing trades',
+        'Review and optimize strategy after every trade',
         'Review own performance periodically and self-adjust',
         'Request data from Research Team as needed',
         'Report trading activity and P&L to CEO',
@@ -358,15 +351,15 @@ export class TradingSystem {
     await this.tradingTeam.checkStops(prices);
     this.tradingTeam.updatePrices(prices);
 
-    // 6. Trading team runs cycle on selected assets (agents analyze, debate, execute)
-    printSeparator('AGENT DEBATE');
-    const { approvedSignals, debateSummary, executed, rejected } = await this.tradingTeam.runCycle(
+    // 6. Trading team runs cycle on selected assets (agents analyze → risk → execute → review+optimize)
+    printSeparator('SIGNAL ANALYSIS');
+    const { signals: tradeSignals, executed, rejected, reviewResults } = await this.tradingTeam.runCycle(
       tradingDataMap, macro,
     );
     printSeparator('EXECUTION');
 
-    // 4. Print debate summary
-    console.log(ConsensusEngine.formatDebateSummary(debateSummary));
+    // 4. Print post-trade review summary
+    console.log(TradingTeam.formatReviewSummary(reviewResults));
 
     // 5. Record performance snapshots for decay detection
     for (const [id, agent] of this.agents) {
@@ -424,9 +417,9 @@ export class TradingSystem {
     // 10. Print summary
     console.log(`\n=== Trading Cycle ${cycle} Summary ===`);
     console.log(`Assets scanned: ${marketDataMap.size} | Trading Team selected: ${selectedAssets.length}`);
-    console.log(`Agent debates: ${debateSummary.length}`);
-    console.log(`Consensus approved: ${approvedSignals.length}`);
+    console.log(`Signals generated: ${tradeSignals.length}`);
     console.log(`Trades executed: ${executed}, risk-rejected: ${rejected}`);
+    console.log(`Post-trade reviews: ${reviewResults.length} (${reviewResults.filter(r => r.optimizationApplied).length} optimized)`);
     console.log(`Active agents: ${[...this.agents.values()].filter(a => a.getStatus() === 'active').length}`);
     console.log(`Spawned: ${spawned.length}, Retired: ${retired.length}`);
     console.log(this.tradingTeam.getPortfolioSummary());

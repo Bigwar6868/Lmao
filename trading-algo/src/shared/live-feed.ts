@@ -8,11 +8,6 @@
 import type {
   AgentId,
   AgentMessage,
-  TradeProposal,
-  TradeDoubt,
-  TradeSupport,
-  TradeCounter,
-  DebateVerdict,
   DirectivePayload,
   ApprovalPayload,
   VetoPayload,
@@ -40,10 +35,6 @@ const C = {
   evolution: '\x1b[32m',  // green
   ops: '\x1b[34m',        // blue
   // Message types
-  proposal: '\x1b[36m',   // cyan
-  doubt: '\x1b[31m',      // red
-  support: '\x1b[32m',    // green
-  verdict: '\x1b[33m',    // yellow
   directive: '\x1b[33;1m',// bold yellow
   alert: '\x1b[31;1m',    // bold red
   discuss: '\x1b[37m',    // white
@@ -90,44 +81,6 @@ function formatMessage(msg: AgentMessage): string | null {
   const arrow = msg.to === 'all' ? '>> ALL' : `-> ${to}`;
 
   switch (msg.type) {
-    case 'proposal': {
-      const p = msg.payload as TradeProposal;
-      return `${ts()} ${C.proposal}[PROPOSAL]${C.reset} ${color}${C.bold}${from}${C.reset} ${arrow}: ` +
-        `${C.bold}${p.signal.action} ${p.signal.asset.symbol}${C.reset} ` +
-        `(confidence: ${(p.signal.confidence * 100).toFixed(0)}%, conviction: ${(p.conviction * 100).toFixed(0)}%) ` +
-        `— "${p.reasoning}"`;
-    }
-
-    case 'doubt': {
-      const d = msg.payload as TradeDoubt;
-      const sev = d.severity === 'veto' ? '!!VETO!!' : d.severity === 'strong' ? '!STRONG' : 'mild';
-      return `${ts()} ${C.doubt}[DOUBT ${sev}]${C.reset} ${color}${C.bold}${from}${C.reset} ${arrow}: ` +
-        `"${d.reason}" ` +
-        `${C.dim}(counter-evidence: ${Object.entries(d.counterEvidence).map(([k, v]) => `${k}=${v}`).join(', ')})${C.reset}`;
-    }
-
-    case 'support': {
-      const s = msg.payload as TradeSupport;
-      return `${ts()} ${C.support}[SUPPORT]${C.reset} ${color}${C.bold}${from}${C.reset} ${arrow}: ` +
-        `"${s.reason}" (+${(s.additionalConfidence * 100).toFixed(0)}% confidence)`;
-    }
-
-    case 'counter': {
-      const c = msg.payload as TradeCounter;
-      return `${ts()} ${C.doubt}[COUNTER]${C.reset} ${color}${C.bold}${from}${C.reset} ${arrow}: ` +
-        `Proposes ${c.alternativeSignal.action} instead — "${c.reason}"`;
-    }
-
-    case 'verdict': {
-      const v = msg.payload as DebateVerdict;
-      const icon = v.approved ? '✓' : '✗';
-      const vColor = v.approved ? C.support : C.doubt;
-      return `${ts()} ${C.verdict}[VERDICT]${C.reset} ${vColor}${C.bold}${icon} ${v.approved ? 'APPROVED' : 'REJECTED'}${C.reset} ` +
-        `(${(v.finalConfidence * 100).toFixed(0)}% confidence, ` +
-        `${v.supporters.length} supporters, ${v.doubters.length} doubters) ` +
-        `— ${v.reason}`;
-    }
-
     case 'directive': {
       const d = msg.payload as DirectivePayload;
       return `${ts()} ${C.directive}[CEO DIRECTIVE]${C.reset} ${C.ceo}${C.bold}CEO${C.reset} -> ${d.targetTeam}: ` +

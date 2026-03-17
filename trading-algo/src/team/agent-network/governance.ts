@@ -3,7 +3,7 @@
 // ============================================================
 
 import type { Signal, Portfolio } from '../../shared/types.js';
-import type { AgentId, DebateVerdict } from '../../shared/agent-types.js';
+import type { AgentId } from '../../shared/agent-types.js';
 import { createModuleLogger } from '../../shared/logger.js';
 import { roundTo } from '../../shared/utils.js';
 
@@ -21,9 +21,8 @@ export interface GovernanceRule {
 /** Context passed to governance rules */
 export interface GovernanceContext {
   signal: Signal;
-  verdict: DebateVerdict;
   portfolio: Portfolio;
-  proposerId: AgentId;
+  agentId: AgentId;
   recentLosses: number;      // consecutive losses
   dailyPnl: number;          // today's PnL
   totalExposure: number;     // total portfolio exposure %

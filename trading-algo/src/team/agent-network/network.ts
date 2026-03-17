@@ -163,13 +163,6 @@ export class AgentNetwork {
     return message;
   }
 
-  /** Get all messages for a debate (by proposal id) */
-  getDebateMessages(proposalId: string): AgentMessage[] {
-    return this.messageLog.filter(
-      m => m.id === proposalId || m.replyTo === proposalId,
-    );
-  }
-
   /** Get recent messages */
   getRecentMessages(count = 50): AgentMessage[] {
     return this.messageLog.slice(-count);
