@@ -5,7 +5,6 @@ import { config } from '../../config/index.js';
 import { eventBus } from '../../shared/events.js';
 import { createModuleLogger } from '../../shared/logger.js';
 import { CryptoDataFetcher } from './crypto.js';
-import { StockDataFetcher } from './stocks.js';
 import { ForexDataFetcher } from './forex.js';
 
 const log = createModuleLogger('MarketAnalyst');
@@ -20,18 +19,16 @@ const TIMEFRAME_TO_AV_INTERVAL: Record<string, '5min' | '15min' | '60min'> = {
 };
 
 /**
- * Coordinates crypto, stock, and forex data fetchers.
+ * Coordinates crypto and forex data fetchers.
  * Provides file-based caching and emits events when new data arrives.
  */
 export class MarketAnalyst {
   private crypto: CryptoDataFetcher;
-  private stocks: StockDataFetcher;
   private forex: ForexDataFetcher;
   private cacheDir: string;
 
   constructor() {
     this.crypto = new CryptoDataFetcher();
-    this.stocks = new StockDataFetcher();
     this.forex = new ForexDataFetcher();
     this.cacheDir = join(config.dataDir, 'historical');
     log.info('MarketAnalyst initialised');
@@ -112,28 +109,6 @@ export class MarketAnalyst {
     return this.crypto.fetchOHLCV(asset.symbol, timeframe);
   }
 
-  private async fetchStock(
-    asset: AssetInfo,
-    timeframe: Timeframe,
-  ): Promise<Candle[]> {
-    const avInterval = TIMEFRAME_TO_AV_INTERVAL[timeframe];
-
-    if (timeframe === '1d' || timeframe === '1w') {
-      return this.stocks.fetchDaily(asset.symbol);
-    }
-
-    if (avInterval) {
-      return this.stocks.fetchIntraday(asset.symbol, avInterval);
-    }
-
-    // Fallback: unsupported intraday timeframes get daily data
-    log.warn(
-      { symbol: asset.symbol, timeframe },
-      'Unsupported stock timeframe, falling back to daily',
-    );
-    return this.stocks.fetchDaily(asset.symbol);
-  }
-
   private async fetchForex(
     asset: AssetInfo,
     timeframe: Timeframe,
@@ -180,9 +155,6 @@ export class MarketAnalyst {
     switch (asset.assetClass) {
       case 'crypto':
         candles = await this.fetchCrypto(asset, timeframe);
-        break;
-      case 'stock':
-        candles = await this.fetchStock(asset, timeframe);
         break;
       case 'forex':
         candles = await this.fetchForex(asset, timeframe);

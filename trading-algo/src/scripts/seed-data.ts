@@ -17,7 +17,7 @@
 import { mkdir, writeFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { config } from '../config/index.js';
-import { cryptoAssets, stockAssets, forexAssets } from '../config/assets.js';
+import { cryptoAssets, forexAssets } from '../config/assets.js';
 import { generateSyntheticCandles } from '../shared/synthetic.js';
 import { createModuleLogger } from '../shared/logger.js';
 import type { AssetInfo, MarketData, Timeframe } from '../shared/types.js';
@@ -71,7 +71,7 @@ async function main(): Promise<void> {
     // Directory empty or doesn't exist yet
   }
 
-  const allAssets = [...cryptoAssets, ...stockAssets, ...forexAssets];
+  const allAssets = [...cryptoAssets, ...forexAssets];
   let seeded = 0;
 
   for (const timeframe of TIMEFRAMES) {

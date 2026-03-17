@@ -107,7 +107,7 @@ export class ResearchTeam extends TeamBase {
   /**
    * Get recent policy changes from central banks and regulators.
    */
-  getPolicyChanges(market?: 'crypto' | 'stocks' | 'forex') {
+  getPolicyChanges(market?: 'crypto' | 'forex') {
     return this.macroEconomist.getPolicyChanges(market);
   }
 

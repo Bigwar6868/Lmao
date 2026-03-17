@@ -16,8 +16,8 @@ export class LiveExecutor {
   async executeOrder(signal: Signal, risk: RiskAssessment): Promise<Order> {
     throw new Error(
       'Live trading is not yet implemented. Use paper trading mode. ' +
-      'To implement: integrate CCXT exchange.createOrder() for crypto, ' +
-      'or Alpaca API for stocks.'
+      'To implement: integrate CCXT exchange.createOrder() for crypto ' +
+      'or forex broker API for forex.'
     );
   }
 

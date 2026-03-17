@@ -1,5 +1,5 @@
 import { TradingOrchestrator } from '../index.js';
-import { allAssets, cryptoAssets, stockAssets, forexAssets } from '../config/assets.js';
+import { allAssets, cryptoAssets, forexAssets } from '../config/assets.js';
 import { config } from '../config/index.js';
 import type { AssetInfo, Timeframe } from '../shared/types.js';
 
@@ -11,7 +11,7 @@ async function main() {
   const assetFilter = process.argv[3];
 
   // If specific asset symbol given, backtest only that
-  if (assetFilter && !['crypto', 'stocks', 'forex', 'all'].includes(assetFilter)) {
+  if (assetFilter && !['crypto', 'forex', 'all'].includes(assetFilter)) {
     const asset = allAssets.find((a) => a.symbol === assetFilter);
     if (!asset) {
       console.error(`Asset not found: ${assetFilter}`);
@@ -28,7 +28,6 @@ async function main() {
   let assets: AssetInfo[];
   switch (assetFilter) {
     case 'crypto': assets = cryptoAssets; break;
-    case 'stocks': assets = stockAssets; break;
     case 'forex': assets = forexAssets; break;
     default: assets = allAssets;
   }

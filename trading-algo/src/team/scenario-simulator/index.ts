@@ -68,7 +68,6 @@ interface ScenarioTemplate {
   /** Impact on different asset classes */
   assetImpact: {
     crypto: number;         // -1 to +1
-    stock: number;
     forex_usd: number;      // positive = USD strengthens
   };
   baseProbability: number;
@@ -79,42 +78,42 @@ const SCENARIO_TEMPLATES: ScenarioTemplate[] = [
     name: 'Soft Landing',
     description: 'Fed achieves inflation target with minimal economic damage. Rate cuts begin. Risk assets rally.',
     shifts: { fedRate: -50, cpi: -0.5, vix: -5, yieldCurve: 20, gdpGrowth: 0.3 },
-    assetImpact: { crypto: 0.6, stock: 0.5, forex_usd: -0.3 },
+    assetImpact: { crypto: 0.6, forex_usd: -0.3 },
     baseProbability: 0.25,
   },
   {
     name: 'Stagflation',
     description: 'Persistent inflation + slowing growth. Fed caught between cutting (growth) and hiking (inflation). Bad for most assets.',
     shifts: { fedRate: 25, cpi: 0.8, vix: 10, yieldCurve: -30, gdpGrowth: -0.5 },
-    assetImpact: { crypto: -0.4, stock: -0.6, forex_usd: 0.2 },
+    assetImpact: { crypto: -0.4, forex_usd: 0.2 },
     baseProbability: 0.15,
   },
   {
     name: 'Risk-On Rally',
     description: 'Strong economic data, earnings beats, geopolitical de-escalation. Animal spirits return.',
     shifts: { fedRate: 0, cpi: -0.2, vix: -8, yieldCurve: 10, gdpGrowth: 0.5 },
-    assetImpact: { crypto: 0.8, stock: 0.7, forex_usd: -0.1 },
+    assetImpact: { crypto: 0.8, forex_usd: -0.1 },
     baseProbability: 0.20,
   },
   {
     name: 'Geopolitical Shock',
     description: 'Major conflict escalation, supply chain disruption, or sanctions. Flight to safety.',
     shifts: { fedRate: -25, cpi: 0.5, vix: 20, yieldCurve: -50, gdpGrowth: -1.0 },
-    assetImpact: { crypto: -0.5, stock: -0.7, forex_usd: 0.5 },
+    assetImpact: { crypto: -0.5, forex_usd: 0.5 },
     baseProbability: 0.10,
   },
   {
     name: 'Liquidity Crunch',
     description: 'Credit tightening, bank stress, or DeFi contagion. Correlations spike, everything sells.',
     shifts: { fedRate: -75, cpi: -0.3, vix: 30, yieldCurve: -80, gdpGrowth: -1.5 },
-    assetImpact: { crypto: -0.8, stock: -0.6, forex_usd: 0.4 },
+    assetImpact: { crypto: -0.8, forex_usd: 0.4 },
     baseProbability: 0.05,
   },
   {
     name: 'Base Case (Status Quo)',
     description: 'Current trends continue. No major surprises. Gradual normalization.',
     shifts: { fedRate: 0, cpi: 0, vix: 0, yieldCurve: 0, gdpGrowth: 0 },
-    assetImpact: { crypto: 0.1, stock: 0.1, forex_usd: 0 },
+    assetImpact: { crypto: 0.1, forex_usd: 0 },
     baseProbability: 0.25,
   },
 ];
@@ -215,7 +214,6 @@ export class ScenarioSimulator {
   ): ScenarioResult {
     const assetClass = asset.assetClass;
     const impact = assetClass === 'crypto' ? template.assetImpact.crypto :
-                   assetClass === 'stock' ? template.assetImpact.stock :
                    template.assetImpact.forex_usd;
 
     // Variables that change in this scenario
@@ -423,7 +421,7 @@ export class ScenarioSimulator {
       returns.push(Math.log(candles[i].close / candles[i - 1].close));
     }
     const dailyVol = stdDev(returns);
-    return dailyVol * Math.sqrt(365); // Annualize (365 for crypto, 252 for stocks)
+    return dailyVol * Math.sqrt(365); // Annualize (365 for crypto/forex)
   }
 
   /**

@@ -23,7 +23,7 @@ export class MeanReversionStrategy implements Strategy {
       name: 'mean-reversion',
       enabled: true,
       params: {},
-      assetClasses: ['crypto', 'stock', 'forex'],
+      assetClasses: ['crypto', 'forex'],
       timeframes: ['15m', '1h', '4h', '1d'],
       ...config,
     };

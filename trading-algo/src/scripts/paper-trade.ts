@@ -1,5 +1,5 @@
 import { TradingOrchestrator } from '../index.js';
-import { allAssets, cryptoAssets, stockAssets, forexAssets } from '../config/assets.js';
+import { allAssets, cryptoAssets, forexAssets } from '../config/assets.js';
 import { config } from '../config/index.js';
 import { withTimeout } from '../shared/utils.js';
 import type { AssetInfo, Timeframe } from '../shared/types.js';
@@ -15,7 +15,6 @@ async function main() {
   let assets: AssetInfo[];
   switch (assetClass) {
     case 'crypto': assets = cryptoAssets; break;
-    case 'stocks': assets = stockAssets; break;
     case 'forex': assets = forexAssets; break;
     case 'all': assets = allAssets; break;
     default: assets = allAssets;
@@ -25,7 +24,6 @@ async function main() {
   console.log(`Timeframe: ${timeframe}, cycle interval: ${intervalMinutes} minutes`);
   console.log(`Assets (${assets.length}): ${assets.map((a) => a.symbol).join(', ')}`);
   console.log(`\n  Crypto: ${cryptoAssets.length} pairs`);
-  console.log(`  Stocks: ${stockAssets.length} tickers`);
   console.log(`  Forex:  ${forexAssets.length} pairs`);
   console.log(`\nPress Ctrl+C to stop\n`);
 

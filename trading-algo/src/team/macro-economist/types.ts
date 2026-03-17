@@ -54,7 +54,7 @@ export interface PolicyChange {
   type: 'monetary' | 'fiscal' | 'regulatory' | 'trade';
   description: string;
   impact: 'hawkish' | 'dovish' | 'neutral' | 'restrictive' | 'expansionary';
-  affectedMarkets: string[];     // e.g., ['crypto', 'stocks', 'forex']
+  affectedMarkets: string[];     // e.g., ['crypto', 'forex']
   effectiveDate: string;
   severity: 'low' | 'medium' | 'high';
 }

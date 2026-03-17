@@ -93,7 +93,7 @@ const RECENT_POLICY_CHANGES: PolicyChange[] = [
     type: 'monetary',
     description: 'Fed holding rates, watching inflation data for cut timing',
     impact: 'neutral',
-    affectedMarkets: ['stocks', 'crypto', 'forex'],
+    affectedMarkets: ['crypto', 'forex'],
     effectiveDate: '2026-03-18',
     severity: 'high',
   },
@@ -103,7 +103,7 @@ const RECENT_POLICY_CHANGES: PolicyChange[] = [
     type: 'monetary',
     description: 'ECB began cutting cycle — dovish pivot',
     impact: 'dovish',
-    affectedMarkets: ['forex', 'stocks'],
+    affectedMarkets: ['forex', 'crypto'],
     effectiveDate: '2026-01-15',
     severity: 'high',
   },
@@ -123,7 +123,7 @@ const RECENT_POLICY_CHANGES: PolicyChange[] = [
     type: 'monetary',
     description: 'PBoC easing to support property sector and growth',
     impact: 'dovish',
-    affectedMarkets: ['stocks', 'crypto', 'forex'],
+    affectedMarkets: ['crypto', 'forex'],
     effectiveDate: '2026-01-20',
     severity: 'medium',
   },
@@ -143,7 +143,7 @@ const RECENT_POLICY_CHANGES: PolicyChange[] = [
     type: 'trade',
     description: 'EU carbon border adjustment — tariffs on high-emission imports',
     impact: 'restrictive',
-    affectedMarkets: ['stocks'],
+    affectedMarkets: ['forex'],
     effectiveDate: '2026-01-01',
     severity: 'low',
   },
@@ -280,7 +280,7 @@ export class GeopoliticalAnalyzer {
   /**
    * Get policy changes affecting specific markets.
    */
-  getPolicyChangesForMarket(market: 'crypto' | 'stocks' | 'forex'): PolicyChange[] {
+  getPolicyChangesForMarket(market: 'crypto' | 'forex'): PolicyChange[] {
     return RECENT_POLICY_CHANGES.filter(p => p.affectedMarkets.includes(market));
   }
 

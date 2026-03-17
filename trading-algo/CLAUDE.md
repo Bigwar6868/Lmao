@@ -6,7 +6,7 @@ src/
 ├── index.ts                         # TradingOrchestrator — main entry
 ├── config/
 │   ├── index.ts                     # All config (API keys, trading params, cloud mode)
-│   └── assets.ts                    # Asset definitions (cryptoAssets, stockAssets, forexAssets)
+│   └── assets.ts                    # Asset definitions (cryptoAssets, forexAssets)
 ├── shared/
 │   ├── types.ts                     # Candle, MarketData, Signal, AssetInfo interfaces
 │   ├── events.ts                    # EventBus — decoupled inter-module communication
@@ -15,7 +15,7 @@ src/
 │   └── synthetic.ts                 # Synthetic OHLCV data generator (cloud fallback)
 ├── scripts/                         # CLI entry points (backtest, paper-trade, etc.)
 └── team/                            # Core trading modules
-    ├── market-analyst/              # Data fetching + caching (crypto/stocks/forex)
+    ├── market-analyst/              # Data fetching + caching (crypto/forex)
     ├── technical-strategist/        # Indicators + 4 strategy implementations
     ├── risk-manager/                # Kelly criterion, stops, position sizing
     ├── executor/                    # Paper + live order execution

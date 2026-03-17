@@ -217,7 +217,7 @@ export class TradingSystem {
     await this.ceo.setTeamPrompt('research',
       'Provide comprehensive market intelligence across all data sources.',
       [
-        'Fetch and cache OHLCV data for all asset classes (crypto, stocks, forex)',
+        'Fetch and cache OHLCV data for all asset classes (crypto, forex)',
         'Monitor macro economic indicators (FRED, global central banks)',
         'Track geopolitical risks (conflicts, sanctions, trade wars, policy changes)',
         'Analyze sentiment from news and social media',
@@ -228,7 +228,7 @@ export class TradingSystem {
         'Do not make trading decisions — only provide data and analysis',
         'Cache aggressively to avoid rate limits',
       ],
-      { dataSources: ['FRED', 'CCXT', 'AlphaVantage', 'geopolitics', 'policy', 'globalMacro', 'calendar'] },
+      { dataSources: ['FRED', 'CCXT', 'geopolitics', 'policy', 'globalMacro', 'calendar'] },
     );
 
     await this.ceo.setTeamPrompt('risk',

@@ -1,5 +1,5 @@
 import { TradingOrchestrator } from '../index.js';
-import { cryptoAssets, stockAssets, forexAssets, allAssets } from '../config/assets.js';
+import { cryptoAssets, forexAssets, allAssets } from '../config/assets.js';
 import { config } from '../config/index.js';
 import type { AssetInfo, Timeframe } from '../shared/types.js';
 
@@ -13,7 +13,6 @@ async function main() {
   let assets: AssetInfo[];
   switch (assetClass) {
     case 'crypto': assets = cryptoAssets; break;
-    case 'stocks': assets = stockAssets; break;
     case 'forex': assets = forexAssets; break;
     case 'all': assets = allAssets; break;
     default: assets = cryptoAssets;

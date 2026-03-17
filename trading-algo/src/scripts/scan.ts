@@ -1,5 +1,5 @@
 import { TradingOrchestrator } from '../index.js';
-import { allAssets, cryptoAssets, stockAssets, forexAssets } from '../config/assets.js';
+import { allAssets, cryptoAssets, forexAssets } from '../config/assets.js';
 import { config } from '../config/index.js';
 import { OpportunityScanner } from '../team/opportunity-scanner/index.js';
 import type { AssetInfo, Timeframe } from '../shared/types.js';
@@ -14,7 +14,6 @@ async function main() {
   let assets: AssetInfo[];
   switch (assetFilter) {
     case 'crypto': assets = cryptoAssets; break;
-    case 'stocks': assets = stockAssets; break;
     case 'forex': assets = forexAssets; break;
     default: assets = allAssets;
   }

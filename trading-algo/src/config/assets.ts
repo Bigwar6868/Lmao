@@ -8,9 +8,6 @@ function crypto(base: string, quote = 'USDT', exchange = 'binance'): AssetInfo {
   return { symbol: `${base}/${quote}`, assetClass: 'crypto', exchange, baseCurrency: base, quoteCurrency: quote };
 }
 
-function stock(symbol: string, exchange = 'nasdaq'): AssetInfo {
-  return { symbol, assetClass: 'stock', exchange };
-}
 
 function forex(base: string, quote: string): AssetInfo {
   return { symbol: `${base}/${quote}`, assetClass: 'forex', baseCurrency: base, quoteCurrency: quote };
@@ -32,36 +29,6 @@ export const cryptoAssets: AssetInfo[] = [
   crypto('AAVE'), crypto('MKR'), crypto('CRV'), crypto('DYDX'), crypto('RUNE'),
   // Meme / high-volatility
   crypto('SHIB'), crypto('PEPE'), crypto('WIF'), crypto('BONK'), crypto('FLOKI'),
-];
-
-// ============================================================
-// Stocks — S&P 500 leaders + sector ETFs + international
-// ============================================================
-
-export const stockAssets: AssetInfo[] = [
-  // Mega caps (Mag 7 + top tech)
-  stock('AAPL'), stock('MSFT'), stock('GOOGL'), stock('AMZN'), stock('NVDA'),
-  stock('META'), stock('TSLA'), stock('AVGO'), stock('ORCL'), stock('CRM'),
-  // Semiconductors
-  stock('AMD'), stock('INTC'), stock('QCOM'), stock('MU'), stock('MRVL'),
-  // Finance
-  stock('JPM'), stock('GS'), stock('V'), stock('MA'), stock('BAC'),
-  // Healthcare
-  stock('UNH'), stock('JNJ'), stock('LLY'), stock('PFE'), stock('ABBV'),
-  // Energy
-  stock('XOM'), stock('CVX'), stock('COP'), stock('SLB'), stock('OXY'),
-  // Consumer
-  stock('WMT'), stock('COST'), stock('HD'), stock('MCD'), stock('NKE'),
-  // Industrial / Defense
-  stock('BA'), stock('CAT'), stock('LMT'), stock('GE'), stock('RTX'),
-  // ETFs — broad market
-  stock('SPY', 'nyse'), stock('QQQ'), stock('IWM', 'nyse'), stock('DIA', 'nyse'),
-  // ETFs — sector
-  stock('XLF', 'nyse'), stock('XLE', 'nyse'), stock('XLK', 'nyse'), stock('XLV', 'nyse'),
-  // ETFs — international / commodities
-  stock('EEM', 'nyse'), stock('GLD', 'nyse'), stock('SLV', 'nyse'), stock('USO', 'nyse'),
-  // Volatility / bonds
-  stock('TLT'), stock('HYG', 'nyse'),
 ];
 
 // ============================================================
@@ -87,7 +54,7 @@ export const forexAssets: AssetInfo[] = [
 // ============================================================
 
 /** All tradeable assets across all classes */
-export const allAssets: AssetInfo[] = [...cryptoAssets, ...stockAssets, ...forexAssets];
+export const allAssets: AssetInfo[] = [...cryptoAssets, ...forexAssets];
 
 /** Quick lookup by symbol */
 export const assetBySymbol = new Map<string, AssetInfo>(

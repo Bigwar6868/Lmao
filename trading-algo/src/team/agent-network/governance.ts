@@ -79,7 +79,7 @@ export class GovernanceEngine {
       maxTradesPerDay: 50,
       killSwitchActive: false,
       humanApprovalAbove: 5000,
-      allowedAssetClasses: ['crypto', 'stock', 'forex'],
+      allowedAssetClasses: ['crypto', 'forex'],
       ...config,
     };
 

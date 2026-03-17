@@ -7,7 +7,7 @@
 - Communication: direct, no fluff, English by default
 
 ## Project Overview
-Self-evolving multi-asset trading algorithm (crypto/stocks/forex) in TypeScript.
+Self-evolving multi-asset trading algorithm (crypto/forex) in TypeScript.
 - Entry point: `trading-algo/src/index.ts`
 - Config: `trading-algo/src/config/index.ts`
 - Tests: `trading-algo/tests/` (vitest)

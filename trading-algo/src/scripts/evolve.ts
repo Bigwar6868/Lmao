@@ -1,5 +1,5 @@
 import { TradingOrchestrator } from '../index.js';
-import { allAssets, cryptoAssets, stockAssets, forexAssets } from '../config/assets.js';
+import { allAssets, cryptoAssets, forexAssets } from '../config/assets.js';
 import { config } from '../config/index.js';
 import type { AssetInfo, Timeframe } from '../shared/types.js';
 
@@ -14,7 +14,6 @@ async function main() {
   let assets: AssetInfo[];
   switch (assetFilter) {
     case 'crypto': assets = cryptoAssets; break;
-    case 'stocks': assets = stockAssets; break;
     case 'forex': assets = forexAssets; break;
     default: assets = allAssets;
   }
@@ -24,7 +23,6 @@ async function main() {
   console.log(`Generations: ${generations}`);
   console.log(`Assets: ${assets.length} (${assetFilter})`);
   console.log(`  Crypto: ${assets.filter(a => a.assetClass === 'crypto').length}`);
-  console.log(`  Stocks: ${assets.filter(a => a.assetClass === 'stock').length}`);
   console.log(`  Forex:  ${assets.filter(a => a.assetClass === 'forex').length}\n`);
 
   for (let gen = 0; gen < generations; gen++) {

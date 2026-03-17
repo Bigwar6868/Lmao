@@ -25,5 +25,5 @@ export interface MarketDataRequest {
   timeframe: Timeframe;
   limit?: number;
   since?: number;
-  assetClass: 'crypto' | 'stock' | 'forex';
+  assetClass: 'crypto' | 'forex';
 }

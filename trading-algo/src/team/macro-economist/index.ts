@@ -90,7 +90,7 @@ export class MacroEconomist {
   /**
    * Get recent policy changes affecting a market class.
    */
-  getPolicyChanges(market?: 'crypto' | 'stocks' | 'forex') {
+  getPolicyChanges(market?: 'crypto' | 'forex') {
     if (market) return this.geopolitical.getPolicyChangesForMarket(market);
     return this.geopolitical.getPolicyChanges();
   }

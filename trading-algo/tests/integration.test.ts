@@ -221,10 +221,9 @@ describe('Macro → Strategy Integration', () => {
 // ---- Integration: Multi-asset analysis ----
 
 describe('Multi-Asset Analysis', () => {
-  it('should analyze crypto, stock, and forex assets', async () => {
+  it('should analyze crypto and forex assets', async () => {
     const assets: AssetInfo[] = [
       { symbol: 'BTC/USDT', assetClass: 'crypto', exchange: 'binance' },
-      { symbol: 'AAPL', assetClass: 'stock', exchange: 'nasdaq' },
       { symbol: 'EUR/USD', assetClass: 'forex' },
     ];
 

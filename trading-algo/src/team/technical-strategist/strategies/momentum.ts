@@ -23,7 +23,7 @@ export class MomentumStrategy implements Strategy {
       name: 'momentum',
       enabled: true,
       params: {},
-      assetClasses: ['crypto', 'stock', 'forex'],
+      assetClasses: ['crypto', 'forex'],
       timeframes: ['5m', '15m', '1h', '4h', '1d'],
       ...config,
     };
