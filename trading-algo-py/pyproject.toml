@@ -1,0 +1,14 @@
+[project]
+name = "trading-algo"
+version = "2.0.0"
+description = "Self-evolving multi-asset trading algorithm with IC Markets integration"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[project.scripts]
+trade = "main:main"
+backtest = "scripts.backtest:main"
+paper-trade = "scripts.paper_trade:main"
