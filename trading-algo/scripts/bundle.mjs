@@ -20,12 +20,12 @@ function run(cmd) {
 }
 
 // Bundle each script entry point
-const scripts = ['backtest', 'paper-trade', 'analyze', 'evolve', 'diagnose', 'scan', 'seed-data'];
+const scripts = ['backtest', 'paper-trade', 'auto-trade', 'analyze', 'evolve', 'diagnose', 'scan', 'seed-data'];
 for (const script of scripts) {
   run(`npx esbuild src/scripts/${script}.ts \
     --bundle --platform=node --target=node20 --format=cjs \
     --outfile=dist/${script}.cjs \
-    --external:cpu-features --external:ssh2 --external:ccxt --external:protobufjs \
+    --external:cpu-features --external:ssh2 --external:protobufjs \
     --minify`);
 }
 
@@ -38,6 +38,7 @@ const cmd = process.argv[2] || 'help';
 const commands = {
   'backtest':    () => require('./backtest.cjs'),
   'paper-trade': () => require('./paper-trade.cjs'),
+  'auto-trade':  () => require('./auto-trade.cjs'),
   'analyze':     () => require('./analyze.cjs'),
   'evolve':      () => require('./evolve.cjs'),
   'diagnose':    () => require('./diagnose.cjs'),
@@ -51,8 +52,9 @@ const commands = {
       '  Usage: trading-algo <command> [options]',
       '',
       '  Commands:',
-      '    backtest      Backtest all strategies',
+      '    auto-trade    Run 24/7 autonomous trading (all agents)',
       '    paper-trade   Run a paper trading cycle',
+      '    backtest      Backtest all strategies',
       '    analyze       Market analysis',
       '    evolve        Evolve strategy parameters (genetic algorithm)',
       '    diagnose      System diagnostics',
@@ -61,8 +63,9 @@ const commands = {
       '    help          Show this help',
       '',
       '  Examples:',
-      '    trading-algo backtest 1h',
-      '    trading-algo paper-trade',
+      '    trading-algo auto-trade           # 24/7 mode',
+      '    trading-algo paper-trade 1h 60    # paper trade, 1h candles, 60min cycles',
+      '    trading-algo backtest 1h crypto   # backtest crypto only',
       '    trading-algo scan',
       '',
     ].join('\\n'));
@@ -85,7 +88,7 @@ writeFileSync(join(DIST, 'cli.cjs'), cliSource);
 run(`npx esbuild src/index.ts \
   --bundle --platform=node --target=node20 --format=cjs \
   --outfile=dist/index.cjs \
-  --external:cpu-features --external:ssh2 --external:ccxt --external:protobufjs \
+  --external:cpu-features --external:ssh2 --external:protobufjs \
   --minify`);
 
 console.log('\\n✅ Bundle complete → dist/');

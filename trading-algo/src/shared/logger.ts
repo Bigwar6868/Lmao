@@ -6,10 +6,6 @@ const level = process.env.LOG_LEVEL || 'warn';
 
 export const logger = pino({
   level,
-  transport: {
-    target: 'pino/file',
-    options: { destination: 1 }, // stdout
-  },
   formatters: {
     level: (label) => ({ level: label }),
   },
