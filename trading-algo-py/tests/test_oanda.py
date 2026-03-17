@@ -6,7 +6,7 @@ from unittest.mock import patch, MagicMock
 
 from shared.types import AssetInfo, AssetClass, Signal, SignalAction, RiskAssessment
 from team.market_analyst.oanda import OandaDataFetcher, TIMEFRAME_TO_GRANULARITY
-from team.executor.oanda import OandaExecutor
+from team.executor.oanda import OandaExecutor, _format_price, _price_precision
 
 
 # ============================================================
@@ -429,6 +429,83 @@ class TestOandaExecutor:
         assert order.filled_price == pytest.approx(1.0852)
         assert mock_session.post.call_count == 2
         mock_sleep.assert_called_once_with(1)  # First backoff = 1s
+
+    def test_price_precision(self):
+        """Test that price formatting uses correct decimals per instrument."""
+        assert _price_precision("EUR_USD") == 5
+        assert _price_precision("GBP_USD") == 5
+        assert _price_precision("USD_JPY") == 3
+        assert _price_precision("EUR_JPY") == 3
+        assert _price_precision("GBP_JPY") == 3
+        assert _price_precision("XAU_USD") == 2
+        assert _price_precision("XAG_USD") == 2
+
+        assert _format_price(1.08523, "EUR_USD") == "1.08523"
+        assert _format_price(192.456, "USD_JPY") == "192.456"
+        assert _format_price(192.4, "GBP_JPY") == "192.400"
+        assert _format_price(2345.67, "XAU_USD") == "2345.67"
+
+    @patch("team.executor.oanda.requests.Session")
+    def test_ensure_sl_tp_attaches_missing(self, mock_session_cls):
+        """Test that _ensure_sl_tp detects missing SL/TP and attaches them."""
+        mock_session = MagicMock()
+        mock_session_cls.return_value = mock_session
+
+        # Trade has no SL/TP orders
+        mock_get = MagicMock()
+        mock_get.json.return_value = {
+            "trade": {
+                "id": "500",
+                "instrument": "EUR_USD",
+                "currentUnits": "10000",
+                "price": "1.08500",
+            }
+        }
+
+        mock_put = MagicMock(status_code=200)
+
+        mock_session.get.return_value = mock_get
+        mock_session.put.return_value = mock_put
+
+        executor = OandaExecutor(api_token="test", account_id="101-001-123")
+        executor._session = mock_session
+
+        executor._ensure_sl_tp("500", "EUR_USD", stop_loss=1.080, take_profit=1.095)
+
+        # Should have called PUT to attach SL/TP
+        mock_session.put.assert_called_once()
+        call_args = mock_session.put.call_args
+        body = call_args.kwargs.get("json") or call_args[1].get("json")
+        assert "stopLoss" in body
+        assert body["stopLoss"]["price"] == "1.08000"
+        assert "takeProfit" in body
+        assert body["takeProfit"]["price"] == "1.09500"
+
+    @patch("team.executor.oanda.requests.Session")
+    def test_ensure_sl_tp_skips_when_present(self, mock_session_cls):
+        """Test that _ensure_sl_tp doesn't modify trade when SL/TP exist."""
+        mock_session = MagicMock()
+        mock_session_cls.return_value = mock_session
+
+        # Trade already has SL/TP
+        mock_get = MagicMock()
+        mock_get.json.return_value = {
+            "trade": {
+                "id": "500",
+                "instrument": "EUR_USD",
+                "stopLossOrder": {"price": "1.08000"},
+                "takeProfitOrder": {"price": "1.09500"},
+            }
+        }
+        mock_session.get.return_value = mock_get
+
+        executor = OandaExecutor(api_token="test", account_id="101-001-123")
+        executor._session = mock_session
+
+        executor._ensure_sl_tp("500", "EUR_USD", stop_loss=1.080, take_profit=1.095)
+
+        # Should NOT have called PUT
+        mock_session.put.assert_not_called()
 
     @patch("team.executor.oanda.requests.Session")
     def test_get_portfolio_live(self, mock_session_cls):

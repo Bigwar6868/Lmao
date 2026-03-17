@@ -32,6 +32,31 @@ LIVE_URL = "https://api-fxtrade.oanda.com"
 _MAX_RETRIES = 3
 _RETRY_BACKOFF = [1, 2, 4]  # seconds
 
+# OANDA price precision per instrument type.
+# JPY pairs use 3 decimals, most forex = 5, metals = 2, indices = 1.
+_JPY_PAIRS = {
+    "USD_JPY", "EUR_JPY", "GBP_JPY", "AUD_JPY", "NZD_JPY",
+    "CAD_JPY", "CHF_JPY", "SGD_JPY", "HKD_JPY", "TRY_JPY",
+}
+
+
+def _price_precision(instrument: str) -> int:
+    """Return the decimal precision OANDA expects for an instrument's price."""
+    if instrument in _JPY_PAIRS:
+        return 3
+    if instrument.startswith(("XAU", "XAG")):
+        return 2
+    if instrument.startswith(("XPT", "XPD")):
+        return 1
+    # Default forex precision
+    return 5
+
+
+def _format_price(price: float, instrument: str) -> str:
+    """Format a price string with the correct precision for OANDA."""
+    prec = _price_precision(instrument)
+    return f"{price:.{prec}f}"
+
 
 class OandaExecutor:
     """Executes real trades via OANDA v20 REST API."""
@@ -101,14 +126,14 @@ class OandaExecutor:
         # Add stop loss (timeInForce required per OANDA docs)
         if risk.stop_loss_price > 0:
             order_body["order"]["stopLossOnFill"] = {
-                "price": f"{risk.stop_loss_price:.5f}",
+                "price": _format_price(risk.stop_loss_price, instrument),
                 "timeInForce": "GTC",
             }
 
         # Add take profit (timeInForce required per OANDA docs)
         if risk.take_profit_price > 0:
             order_body["order"]["takeProfitOnFill"] = {
-                "price": f"{risk.take_profit_price:.5f}",
+                "price": _format_price(risk.take_profit_price, instrument),
                 "timeInForce": "GTC",
             }
 
@@ -135,6 +160,26 @@ class OandaExecutor:
             side = Side.BUY if signal.action == SignalAction.BUY else Side.SELL
             filled_price = float(fill_tx.get("price", signal.price))
             trade_opened = fill_tx.get("tradeOpened", {})
+            trade_id = trade_opened.get("tradeID", "")
+
+            # Verify SL/TP were attached — OANDA can fill the order but
+            # silently reject dependent orders if price precision is wrong.
+            has_sl = bool(fill_tx.get("stopLossOnFill") or
+                          data.get("relatedTransactionIDs"))
+            has_tp = bool(fill_tx.get("takeProfitOnFill") or
+                          data.get("relatedTransactionIDs"))
+
+            # If SL/TP were requested but not confirmed, attach them now
+            if trade_id:
+                sl_ok = not (risk.stop_loss_price > 0)  # not needed = ok
+                tp_ok = not (risk.take_profit_price > 0)
+
+                # Check if SL/TP orders exist on the trade
+                if risk.stop_loss_price > 0 or risk.take_profit_price > 0:
+                    sl_price = risk.stop_loss_price if risk.stop_loss_price > 0 else None
+                    tp_price = risk.take_profit_price if risk.take_profit_price > 0 else None
+                    # Always try to set SL/TP on the trade as a safety net
+                    self._ensure_sl_tp(trade_id, instrument, sl_price, tp_price)
 
             order = Order(
                 id=str(uuid.uuid4())[:8],
@@ -153,9 +198,11 @@ class OandaExecutor:
             )
 
             log.info(
-                "OANDA %s %s %d units @ %.5f (trade=%s)",
+                "OANDA %s %s %d units @ %.5f (trade=%s, SL=%s, TP=%s)",
                 signal.action.value, signal.asset.symbol, abs(units),
-                filled_price, trade_opened.get("tradeID", ""),
+                filled_price, trade_id,
+                _format_price(risk.stop_loss_price, instrument) if risk.stop_loss_price > 0 else "none",
+                _format_price(risk.take_profit_price, instrument) if risk.take_profit_price > 0 else "none",
             )
             event_bus.emit("order:filled", order, "OandaExecutor")
             return order
@@ -169,6 +216,62 @@ class OandaExecutor:
             raise RuntimeError(f"OANDA order failed: {error_body}") from e
         except Exception as e:
             raise RuntimeError(f"OANDA order failed: {e}") from e
+
+    def _ensure_sl_tp(
+        self,
+        trade_id: str,
+        instrument: str,
+        stop_loss: float | None,
+        take_profit: float | None,
+    ) -> None:
+        """Verify SL/TP exist on a trade; if not, attach them via modify.
+
+        This is a safety net — stopLossOnFill/takeProfitOnFill should work,
+        but OANDA can silently reject them (e.g. wrong price precision).
+        """
+        try:
+            # Check current trade state
+            resp = self._session.get(
+                f"{self.base_url}/v3/accounts/{self.account_id}/trades/{trade_id}",
+                timeout=10,
+            )
+            resp.raise_for_status()
+            trade = resp.json().get("trade", {})
+
+            needs_update = False
+            body: dict = {}
+
+            if stop_loss and "stopLossOrder" not in trade:
+                body["stopLoss"] = {
+                    "price": _format_price(stop_loss, instrument),
+                    "timeInForce": "GTC",
+                }
+                needs_update = True
+                log.warning("SL missing on trade %s — attaching SL=%s", trade_id,
+                            _format_price(stop_loss, instrument))
+
+            if take_profit and "takeProfitOrder" not in trade:
+                body["takeProfit"] = {
+                    "price": _format_price(take_profit, instrument),
+                    "timeInForce": "GTC",
+                }
+                needs_update = True
+                log.warning("TP missing on trade %s — attaching TP=%s", trade_id,
+                            _format_price(take_profit, instrument))
+
+            if needs_update:
+                mod_resp = self._session.put(
+                    f"{self.base_url}/v3/accounts/{self.account_id}/trades/{trade_id}/orders",
+                    json=body,
+                    timeout=10,
+                )
+                mod_resp.raise_for_status()
+                log.info("SL/TP attached to trade %s", trade_id)
+            else:
+                log.info("SL/TP confirmed on trade %s", trade_id)
+
+        except Exception as e:
+            log.error("Failed to verify/attach SL/TP on trade %s: %s", trade_id, e)
 
     # ------------------------------------------------------------------
     # Order Management
@@ -298,13 +401,16 @@ class OandaExecutor:
         self, trade_id: str,
         stop_loss: float | None = None,
         take_profit: float | None = None,
+        instrument: str | None = None,
     ) -> bool:
         """Modify stop loss and take profit for an open trade."""
+        # Determine instrument for price precision
+        inst = instrument.replace("/", "_") if instrument else ""
         body: dict = {}
         if stop_loss is not None:
-            body["stopLoss"] = {"price": f"{stop_loss:.5f}"}
+            body["stopLoss"] = {"price": _format_price(stop_loss, inst)}
         if take_profit is not None:
-            body["takeProfit"] = {"price": f"{take_profit:.5f}"}
+            body["takeProfit"] = {"price": _format_price(take_profit, inst)}
 
         if not body:
             return True
