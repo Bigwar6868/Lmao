@@ -7,6 +7,7 @@ import type { AgentId, AgentSwarmConfig } from '../../shared/agent-types.js';
 import { generateId } from '../../shared/utils.js';
 import { createModuleLogger } from '../../shared/logger.js';
 import { StrategyEvolver } from '../self-improver/evolver.js';
+import { createRandomHybrid } from '../technical-strategist/strategies/hybrid.js';
 import { TradingAgent } from './trading-agent.js';
 import type { AgentNetwork } from './network.js';
 
@@ -107,6 +108,7 @@ export class AgentSpawner {
   /**
    * Force-evolve underperforming agents.
    * Mutates their DNA to try new parameter combinations.
+   * If an agent has been on probation too long, it discovers a new strategy entirely.
    */
   evolveUnderperformers(): number {
     let evolved = 0;
@@ -115,6 +117,18 @@ export class AgentSpawner {
       if (agent.getStatus() !== 'probation') continue;
 
       const currentDna = agent.getDNA();
+
+      // If agent has been evolved 3+ times and still on probation,
+      // discover a completely new hybrid strategy
+      if (currentDna.generation >= 3 && agent.getReputation() < 25) {
+        const newStrategy = this.discoverNewStrategy(agent);
+        if (newStrategy) {
+          evolved++;
+          continue;
+        }
+      }
+
+      // Normal DNA mutation
       const mutatedDna = this.evolver.mutate(currentDna);
       mutatedDna.generation = currentDna.generation + 1;
 
@@ -129,6 +143,53 @@ export class AgentSpawner {
     }
 
     return evolved;
+  }
+
+  /**
+   * Strategy discovery — creates a brand new hybrid strategy for an agent.
+   * Instead of just mutating parameters, the agent tries an entirely new
+   * indicator combination. This is how agents "find their own strategy."
+   */
+  private discoverNewStrategy(agent: TradingAgent): boolean {
+    try {
+      const hybrid = createRandomHybrid();
+      this.strategies.set(hybrid.name, hybrid);
+
+      // Retire the old agent and spawn a new one with the discovered strategy
+      const newAgent = new TradingAgent({
+        strategy: hybrid,
+        network: this.network,
+        parentId: agent.id,
+        generation: 0,
+      });
+
+      this.agents.set(newAgent.id, newAgent);
+      this.lastSpawnTime = Date.now();
+
+      // Broadcast discovery
+      void this.network.broadcast(newAgent.id, 'spawn', {
+        type: 'spawn',
+        parentId: agent.id,
+        reason: `Strategy discovery: ${agent.profile.name} discovered ${hybrid.name}`,
+        dna: hybrid.dna,
+      });
+
+      log.info({
+        oldAgent: agent.profile.name,
+        newAgent: newAgent.profile.name,
+        strategy: hybrid.name,
+        weights: {
+          rsi: hybrid.dna.params['rsiWeight']?.toFixed(2),
+          ema: hybrid.dna.params['emaWeight']?.toFixed(2),
+          macd: hybrid.dna.params['macdWeight']?.toFixed(2),
+        },
+      }, 'Agent discovered new hybrid strategy');
+
+      return true;
+    } catch (err) {
+      log.warn({ error: (err as Error).message }, 'Strategy discovery failed');
+      return false;
+    }
   }
 
   // ----------------------------------------------------------------

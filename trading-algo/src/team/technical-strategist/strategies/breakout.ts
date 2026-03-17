@@ -24,7 +24,7 @@ export class BreakoutStrategy implements Strategy {
       enabled: true,
       params: {},
       assetClasses: ['crypto', 'forex'],
-      timeframes: ['15m', '1h', '4h', '1d'],
+      timeframes: ['1m', '5m', '15m', '1h', '4h', '1d', '1w'],
       ...config,
     };
     this.dna = this.getDefaultDNA();
