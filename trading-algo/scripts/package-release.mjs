@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
+const DIST = join(ROOT, 'dist');
 const RELEASE = join(ROOT, 'release');
 const VERSION = process.env.VERSION || '1.0.0';
 const NAME = 'trading-algo';
@@ -39,6 +40,24 @@ function sha256(filePath) {
 rmSync(RELEASE, { recursive: true, force: true });
 mkdirSync(RELEASE, { recursive: true });
 
+// ── Build pkg config dynamically ─────────────────────────────
+// Include all bundled CJS files, copied node_modules, and data dir
+const pkgConfig = {
+  scripts: [],
+  assets: [
+    'dist/node_modules/**/*',
+    'data/**/*',
+  ],
+};
+
+// Add all CJS script files so pkg can snapshot them
+const cjsFiles = readdirSync(DIST).filter(f => f.endsWith('.cjs') && f !== 'cli.cjs');
+pkgConfig.scripts = cjsFiles.map(f => `dist/${f}`);
+
+console.log('\n=== pkg config ===');
+console.log('scripts:', pkgConfig.scripts);
+console.log('assets:', pkgConfig.assets);
+
 // ── Compile binaries ─────────────────────────────────────────
 console.log('\n=== Compiling standalone binaries ===\n');
 
@@ -46,8 +65,13 @@ for (const target of TARGETS) {
   const ext = target.ext || '';
   const binName = target.name + ext;
   console.log(`\n→ ${binName}`);
+
+  // pkg reads assets/scripts from the "pkg" field in package.json
   try {
-    run(`npx @yao-pkg/pkg dist/cli.cjs --target ${target.pkg} --output release/${binName} --compress GZip`);
+    run(`npx @yao-pkg/pkg dist/cli.cjs \
+      --target ${target.pkg} \
+      --output release/${binName} \
+      --compress GZip`);
   } catch {
     console.warn(`  ⚠ Skipped ${binName} (cross-compile unavailable on this runner)`);
   }

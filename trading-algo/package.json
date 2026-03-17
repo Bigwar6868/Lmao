@@ -24,7 +24,19 @@
   },
   "pkg": {
     "assets": [
-      "data/**/*"
+      "data/**/*",
+      "dist/node_modules/**/*"
+    ],
+    "scripts": [
+      "dist/backtest.cjs",
+      "dist/paper-trade.cjs",
+      "dist/auto-trade.cjs",
+      "dist/analyze.cjs",
+      "dist/evolve.cjs",
+      "dist/diagnose.cjs",
+      "dist/scan.cjs",
+      "dist/seed-data.cjs",
+      "dist/index.cjs"
     ],
     "outputPath": "release"
   },
