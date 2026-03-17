@@ -191,3 +191,22 @@ class MarketAnalyst:
             except Exception as e:
                 log.error("Failed to fetch %s: %s", asset.symbol, e)
         return results
+
+    def fetch_live_prices(self, symbols: list[str]) -> dict[str, dict]:
+        """Fetch real-time prices directly from OANDA, bypassing cache.
+
+        Returns dict of {symbol: {"bid": float, "ask": float, "mid": float}}.
+        Falls back to empty dict if OANDA unavailable.
+        """
+        if self._oanda is None:
+            log.warning("No OANDA fetcher — cannot get live prices")
+            return {}
+        try:
+            prices = self._oanda.get_prices(symbols)
+            # Add mid price for convenience
+            for sym, data in prices.items():
+                data["mid"] = (data["bid"] + data["ask"]) / 2 if data["bid"] and data["ask"] else 0
+            return prices
+        except Exception as e:
+            log.error("Live price fetch failed: %s", e)
+            return {}

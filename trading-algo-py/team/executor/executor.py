@@ -63,16 +63,33 @@ class Executor:
         return self.paper.execute_trade(signal, risk)
 
     def update_prices(self, prices: dict[str, float]) -> None:
-        self.paper.update_prices(prices)
+        # In live mode OANDA tracks prices server-side; no local update needed
+        if self.mode != "live":
+            self.paper.update_prices(prices)
 
     def check_stops(self, prices: dict[str, float]) -> list:
+        # In live mode OANDA handles SL/TP server-side via stopLossOnFill/takeProfitOnFill
+        if self.mode == "live":
+            return []
         return self.paper.check_stops(prices)
 
     def get_portfolio(self) -> Portfolio:
+        """Get portfolio — live from OANDA or local paper trader."""
+        if self.mode == "live":
+            try:
+                return self._get_live().get_portfolio()
+            except Exception as e:
+                log.error("Live portfolio fetch failed, falling back to paper: %s", e)
         return self.paper.get_portfolio()
 
     def get_order_history(self) -> list[Order]:
         return self.paper.get_order_history()
 
     def get_summary(self) -> str:
+        """Get summary — live from OANDA or local paper trader."""
+        if self.mode == "live":
+            try:
+                return self._get_live().get_summary()
+            except Exception as e:
+                log.error("Live summary failed, falling back to paper: %s", e)
         return self.paper.get_summary()

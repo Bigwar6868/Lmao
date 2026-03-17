@@ -429,3 +429,94 @@ class TestOandaExecutor:
         assert order.filled_price == pytest.approx(1.0852)
         assert mock_session.post.call_count == 2
         mock_sleep.assert_called_once_with(1)  # First backoff = 1s
+
+    @patch("team.executor.oanda.requests.Session")
+    def test_get_portfolio_live(self, mock_session_cls):
+        """Test that get_portfolio fetches live data from OANDA."""
+        mock_session = MagicMock()
+        mock_session_cls.return_value = mock_session
+
+        # Mock account summary response
+        mock_summary = MagicMock()
+        mock_summary.json.return_value = {
+            "account": {
+                "balance": "10000.00",
+                "unrealizedPL": "50.66",
+                "realizedPL": "120.00",
+                "NAV": "10170.66",
+                "marginUsed": "500.00",
+                "marginAvailable": "9670.66",
+                "openTradeCount": 2,
+                "currency": "GBP",
+            }
+        }
+
+        # Mock open trades response
+        mock_trades = MagicMock()
+        mock_trades.json.return_value = {
+            "trades": [
+                {
+                    "id": "301",
+                    "instrument": "EUR_USD",
+                    "currentUnits": "10000",
+                    "price": "1.08500",
+                    "unrealizedPL": "30.00",
+                    "realizedPL": "0.00",
+                    "openTime": "2026-03-17T10:00:00Z",
+                },
+                {
+                    "id": "302",
+                    "instrument": "GBP_JPY",
+                    "currentUnits": "-5000",
+                    "price": "192.50",
+                    "unrealizedPL": "20.66",
+                    "realizedPL": "0.00",
+                    "openTime": "2026-03-17T11:00:00Z",
+                },
+            ]
+        }
+
+        # get_account_balance calls summary, get_open_trades calls openTrades
+        mock_session.get.side_effect = [mock_summary, mock_trades]
+
+        executor = OandaExecutor(api_token="test", account_id="101-001-123")
+        executor._session = mock_session
+
+        portfolio = executor.get_portfolio()
+
+        assert portfolio.capital == pytest.approx(10170.66)
+        assert portfolio.available_capital == pytest.approx(9670.66)
+        assert len(portfolio.positions) == 2
+        assert portfolio.positions[0].broker_position_id == "301"
+        assert portfolio.positions[1].side.value == "sell"
+        assert portfolio.total_pnl == pytest.approx(170.66)  # 50.66 + 120.00
+
+    @patch("team.executor.oanda.requests.Session")
+    def test_get_summary_live(self, mock_session_cls):
+        """Test that get_summary returns live OANDA account string."""
+        mock_session = MagicMock()
+        mock_session_cls.return_value = mock_session
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "account": {
+                "balance": "10000.00",
+                "unrealizedPL": "0.66",
+                "realizedPL": "50.00",
+                "NAV": "10050.66",
+                "marginUsed": "250.00",
+                "marginAvailable": "9800.66",
+                "openTradeCount": 3,
+                "currency": "GBP",
+            }
+        }
+        mock_session.get.return_value = mock_resp
+
+        executor = OandaExecutor(api_token="test", account_id="101-001-123")
+        executor._session = mock_session
+
+        summary = executor.get_summary()
+        assert "10050.66" in summary
+        assert "GBP" in summary
+        assert "0.66" in summary
+        assert "Open: 3" in summary

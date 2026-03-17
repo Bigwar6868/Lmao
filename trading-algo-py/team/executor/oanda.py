@@ -16,8 +16,9 @@ import uuid
 import requests
 
 from shared.types import (
-    Signal, SignalAction, RiskAssessment, Order, Position,
+    Signal, SignalAction, RiskAssessment, Order, Position, Portfolio,
     Side, OrderType, OrderStatus, PositionStatus,
+    AssetInfo, AssetClass,
 )
 from shared.events import event_bus
 from config.settings import config
@@ -333,10 +334,86 @@ class OandaExecutor:
             return {
                 "balance": float(acct.get("balance", 0)),
                 "unrealized_pl": float(acct.get("unrealizedPL", 0)),
+                "realized_pl": float(acct.get("realizedPL", 0)),
+                "nav": float(acct.get("NAV", 0)),
                 "margin_used": float(acct.get("marginUsed", 0)),
                 "margin_available": float(acct.get("marginAvailable", 0)),
+                "open_trade_count": int(acct.get("openTradeCount", 0)),
                 "currency": acct.get("currency", "USD"),
             }
         except Exception as e:
             log.error("OANDA account balance failed: %s", e)
             return {}
+
+    # ------------------------------------------------------------------
+    # Portfolio (live from OANDA)
+    # ------------------------------------------------------------------
+
+    def get_portfolio(self) -> Portfolio:
+        """Build a Portfolio from live OANDA account data.
+
+        Fetches account summary + open trades directly from OANDA
+        so P&L reflects real-time values, not cached data.
+        """
+        acct = self.get_account_balance()
+        if not acct:
+            return Portfolio(capital=0, available_capital=0)
+
+        trades = self.get_open_trades()
+        positions: list[Position] = []
+        for t in trades:
+            side = Side.BUY if t["side"] == "buy" else Side.SELL
+            # Build a minimal AssetInfo for the position
+            asset = AssetInfo(
+                symbol=t["instrument"],
+                asset_class=AssetClass.FOREX,
+            )
+            positions.append(Position(
+                id=t["trade_id"],
+                asset=asset,
+                side=side,
+                entry_price=t["entry_price"],
+                current_price=t["entry_price"],  # OANDA gives P&L directly
+                quantity=abs(t["units"]) / 100_000,
+                strategy="-",
+                stop_loss=t.get("stop_loss"),
+                take_profit=t.get("take_profit"),
+                unrealized_pnl=t["unrealized_pl"],
+                realized_pnl=t["realized_pl"],
+                broker_position_id=t["trade_id"],
+            ))
+
+        nav = acct.get("nav", acct.get("balance", 0))
+        unrealized = acct.get("unrealized_pl", 0)
+        realized = acct.get("realized_pl", 0)
+        balance = acct.get("balance", 0)
+
+        return Portfolio(
+            capital=nav,
+            available_capital=acct.get("margin_available", 0),
+            positions=positions,
+            total_pnl=unrealized + realized,
+            total_pnl_pct=((nav - balance + realized) / balance * 100) if balance else 0,
+            max_drawdown=0,  # OANDA doesn't track this server-side
+            last_updated=int(time.time() * 1000),
+        )
+
+    def get_summary(self) -> str:
+        """One-line summary from live OANDA account data."""
+        acct = self.get_account_balance()
+        if not acct:
+            return "OANDA: unavailable"
+
+        nav = acct.get("nav", acct.get("balance", 0))
+        unrealized = acct.get("unrealized_pl", 0)
+        realized = acct.get("realized_pl", 0)
+        currency = acct.get("currency", "GBP")
+        open_count = acct.get("open_trade_count", 0)
+
+        return (
+            f"OANDA: {currency} {nav:.2f} NAV | "
+            f"Unrealised: {currency} {unrealized:.2f} | "
+            f"Realised: {currency} {realized:.2f} | "
+            f"Open: {open_count} | "
+            f"Margin: {currency} {acct.get('margin_used', 0):.2f}"
+        )
