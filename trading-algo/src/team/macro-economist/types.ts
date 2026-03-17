@@ -39,7 +39,7 @@ export interface GeopoliticalRisk {
 
 /** A specific geopolitical risk factor */
 export interface GeopoliticalFactor {
-  category: 'conflict' | 'sanctions' | 'trade-war' | 'election' | 'policy' | 'energy' | 'pandemic' | 'debt-crisis';
+  category: 'conflict' | 'sanctions' | 'trade-war' | 'election' | 'policy' | 'regulatory' | 'energy' | 'pandemic' | 'debt-crisis';
   region: string;
   description: string;
   severity: 'low' | 'medium' | 'high' | 'critical';

@@ -101,7 +101,7 @@ export class OverfitGuard {
       if (trainCandles.length < 50 || testCandles.length < 20) continue;
 
       // Backtest on training data
-      const trainResult = await engine.run({
+      const trainResult = await engine.run(strategy, trainCandles, {
         strategy: strategy.config,
         asset,
         timeframe,
@@ -110,10 +110,10 @@ export class OverfitGuard {
         initialCapital: 10000,
         commission: 0.001,
         slippage: 0.0005,
-      }, trainCandles, strategy.dna);
+      });
 
       // Backtest on test data (unseen)
-      const testResult = await engine.run({
+      const testResult = await engine.run(strategy, testCandles, {
         strategy: strategy.config,
         asset,
         timeframe,
@@ -122,7 +122,7 @@ export class OverfitGuard {
         initialCapital: 10000,
         commission: 0.001,
         slippage: 0.0005,
-      }, testCandles, strategy.dna);
+      });
 
       const sharpeDrop = trainResult.metrics.sharpeRatio > 0
         ? 1 - (testResult.metrics.sharpeRatio / trainResult.metrics.sharpeRatio)

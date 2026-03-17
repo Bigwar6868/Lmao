@@ -192,7 +192,7 @@ export class TradingTeam extends TeamBase {
       // Check if CEO prompt restricts asset classes
       if (prompt?.constraints?.length) {
         const blocked = prompt.constraints.some(c =>
-          c.toLowerCase().includes(data.asset.class) && c.toLowerCase().includes('exclude'),
+          c.toLowerCase().includes(data.asset.assetClass) && c.toLowerCase().includes('exclude'),
         );
         if (blocked) continue;
       }
@@ -328,17 +328,17 @@ export class TradingTeam extends TeamBase {
       const trend = sma5 > sma20 ? 'uptrend' : sma5 < sma20 ? 'downtrend' : 'sideways';
 
       if (isWin) {
-        if (position.side === 'long' && trend === 'uptrend') {
+        if (position.side === 'buy' && trend === 'uptrend') {
           reasons.push('Traded with the trend (long in uptrend)');
-        } else if (position.side === 'short' && trend === 'downtrend') {
+        } else if (position.side === 'sell' && trend === 'downtrend') {
           reasons.push('Traded with the trend (short in downtrend)');
         } else {
           reasons.push('Won against the trend — possible mean reversion');
         }
       } else {
-        if (position.side === 'long' && trend === 'downtrend') {
+        if (position.side === 'buy' && trend === 'downtrend') {
           reasons.push('Traded against the trend (long in downtrend)');
-        } else if (position.side === 'short' && trend === 'uptrend') {
+        } else if (position.side === 'sell' && trend === 'uptrend') {
           reasons.push('Traded against the trend (short in uptrend)');
         }
       }
@@ -365,17 +365,17 @@ export class TradingTeam extends TeamBase {
       if (macro.riskLevel === 'high' || macro.riskLevel === 'extreme') {
         reasons.push(`Macro risk was ${macro.riskLevel} — risk-off conditions`);
       }
-      if (!isWin && macro.bias === 'bearish' && position.side === 'long') {
+      if (!isWin && macro.bias === 'bearish' && position.side === 'buy') {
         reasons.push('Macro bias was bearish but went long — macro headwind');
       }
-      if (!isWin && macro.bias === 'bullish' && position.side === 'short') {
+      if (!isWin && macro.bias === 'bullish' && position.side === 'sell') {
         reasons.push('Macro bias was bullish but went short — macro headwind');
       }
     }
 
     // Stop loss hit?
     if (!isWin && position.stopLoss) {
-      const hitStop = position.side === 'long'
+      const hitStop = position.side === 'buy'
         ? position.currentPrice <= position.stopLoss
         : position.currentPrice >= position.stopLoss;
       if (hitStop) {
