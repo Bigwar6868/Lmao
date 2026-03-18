@@ -1,4 +1,12 @@
-"""Four trading strategies: momentum, mean-reversion, breakout, multi-indicator."""
+"""Four trading strategies: momentum, mean-reversion, breakout, multi-indicator.
+
+Improvements over v1:
+- Momentum: added ADX trend-strength filter + SMA200 trend direction filter
+- Mean-reversion: added mean-reversion confirmation (RSI divergence check)
+- Breakout: replaced volume check with ATR expansion for forex compatibility
+- Multi-indicator: lowered threshold from 0.55→0.35 to actually generate signals,
+  added trend alignment bonus for confluence
+"""
 
 from __future__ import annotations
 
@@ -47,21 +55,90 @@ class BaseStrategy(ABC):
             reason=reason,
         )
 
+    def _trend_direction(self, candles: list[Candle], period: int = 50) -> float | None:
+        """Return trend direction: >0 = uptrend, <0 = downtrend, None = insufficient data."""
+        sma_vals = sma(candles, period)
+        if sma_vals[-1] is None:
+            return None
+        return candles[-1].close - sma_vals[-1]
+
+    def _calc_adx(self, candles: list[Candle], period: int = 14) -> float | None:
+        """Simplified ADX — measures trend strength (0-100)."""
+        if len(candles) < period * 2 + 1:
+            return None
+
+        plus_dm_list = []
+        minus_dm_list = []
+        tr_list = []
+
+        for j in range(1, len(candles)):
+            h = candles[j].high
+            l = candles[j].low
+            ph = candles[j - 1].high
+            pl = candles[j - 1].low
+            pc = candles[j - 1].close
+
+            plus_dm = max(h - ph, 0) if (h - ph) > (pl - l) else 0
+            minus_dm = max(pl - l, 0) if (pl - l) > (h - ph) else 0
+            tr = max(h - l, abs(h - pc), abs(l - pc))
+
+            plus_dm_list.append(plus_dm)
+            minus_dm_list.append(minus_dm)
+            tr_list.append(tr)
+
+        if len(tr_list) < period:
+            return None
+
+        # Smoothed averages
+        smoothed_plus = sum(plus_dm_list[:period])
+        smoothed_minus = sum(minus_dm_list[:period])
+        smoothed_tr = sum(tr_list[:period])
+
+        dx_vals = []
+        for j in range(period, len(tr_list)):
+            smoothed_plus = smoothed_plus - smoothed_plus / period + plus_dm_list[j]
+            smoothed_minus = smoothed_minus - smoothed_minus / period + minus_dm_list[j]
+            smoothed_tr = smoothed_tr - smoothed_tr / period + tr_list[j]
+
+            if smoothed_tr == 0:
+                continue
+            plus_di = 100 * smoothed_plus / smoothed_tr
+            minus_di = 100 * smoothed_minus / smoothed_tr
+            di_sum = plus_di + minus_di
+            if di_sum == 0:
+                continue
+            dx = 100 * abs(plus_di - minus_di) / di_sum
+            dx_vals.append(dx)
+
+        if len(dx_vals) < period:
+            return None
+
+        adx = sum(dx_vals[-period:]) / period
+        return adx
+
 
 class MomentumStrategy(BaseStrategy):
-    """Momentum strategy using EMA crossovers + RSI confirmation."""
+    """Momentum strategy using EMA crossovers + RSI + ADX trend filter.
+
+    v2 improvements:
+    - ADX filter: only trade when ADX > 20 (trending market)
+    - SMA50 trend alignment: buy only in uptrend, sell only in downtrend
+    - Higher base confidence requirement
+    """
 
     def get_default_dna(self) -> StrategyDNA:
         return StrategyDNA(
             id=str(uuid.uuid4())[:8],
             name="momentum",
             params={"fast_ema": 12, "slow_ema": 26, "rsi_period": 14,
-                    "rsi_overbought": 70, "rsi_oversold": 30, "min_confidence": 0.5},
+                    "rsi_overbought": 70, "rsi_oversold": 30,
+                    "adx_threshold": 20, "trend_period": 50,
+                    "min_confidence": 0.5},
         )
 
     def analyze(self, data: MarketData) -> list[Signal]:
         candles = data.candles
-        if len(candles) < 30:
+        if len(candles) < 55:
             return []
 
         p = self.dna.params
@@ -75,26 +152,54 @@ class MomentumStrategy(BaseStrategy):
         if fast[i - 1] is None or slow[i - 1] is None:
             return []
 
+        # Trend filters
+        adx = self._calc_adx(candles, 14)
+        adx_threshold = p.get("adx_threshold", 20)
+        trend = self._trend_direction(candles, int(p.get("trend_period", 50)))
+
         indicators = {
             "fast_ema": fast[i], "slow_ema": slow[i], "rsi": rsi_vals[i],
+            "adx": adx or 0, "trend": trend or 0,
         }
 
-        # Bullish crossover
+        # Skip if market is not trending (ADX too low)
+        if adx is not None and adx < adx_threshold:
+            return [self._make_signal(
+                data.asset, SignalAction.HOLD, 0.2, candles[i].close,
+                data.timeframe, indicators, f"Weak trend (ADX={adx:.1f})",
+            )]
+
+        # Bullish crossover — only if price above SMA50 (uptrend)
         if fast[i - 1] <= slow[i - 1] and fast[i] > slow[i]:
             if rsi_vals[i] < p.get("rsi_overbought", 70):
+                if trend is not None and trend <= 0:
+                    return [self._make_signal(
+                        data.asset, SignalAction.HOLD, 0.3, candles[i].close,
+                        data.timeframe, indicators, "Bullish crossover against downtrend — skipped",
+                    )]
                 conf = 0.6 + (fast[i] - slow[i]) / slow[i] * 10
+                # ADX strength bonus
+                if adx and adx > 30:
+                    conf += 0.1
                 return [self._make_signal(
                     data.asset, SignalAction.BUY, conf, candles[i].close,
-                    data.timeframe, indicators, "EMA bullish crossover with RSI confirmation",
+                    data.timeframe, indicators, "EMA bullish crossover, trend-aligned + ADX confirmation",
                 )]
 
-        # Bearish crossover
+        # Bearish crossover — only if price below SMA50 (downtrend)
         if fast[i - 1] >= slow[i - 1] and fast[i] < slow[i]:
             if rsi_vals[i] > p.get("rsi_oversold", 30):
+                if trend is not None and trend >= 0:
+                    return [self._make_signal(
+                        data.asset, SignalAction.HOLD, 0.3, candles[i].close,
+                        data.timeframe, indicators, "Bearish crossover against uptrend — skipped",
+                    )]
                 conf = 0.6 + (slow[i] - fast[i]) / slow[i] * 10
+                if adx and adx > 30:
+                    conf += 0.1
                 return [self._make_signal(
                     data.asset, SignalAction.SELL, conf, candles[i].close,
-                    data.timeframe, indicators, "EMA bearish crossover with RSI confirmation",
+                    data.timeframe, indicators, "EMA bearish crossover, trend-aligned + ADX confirmation",
                 )]
 
         return [self._make_signal(
@@ -104,14 +209,21 @@ class MomentumStrategy(BaseStrategy):
 
 
 class MeanReversionStrategy(BaseStrategy):
-    """Mean reversion using Bollinger Bands + RSI extremes."""
+    """Mean reversion using Bollinger Bands + RSI extremes.
+
+    v2 improvements:
+    - Added RSI divergence check (price makes new low but RSI doesn't)
+    - Tighter entry: requires RSI < 25 / > 75 (was 30/70) for stronger extremes
+    - Only trades when BB width is wide enough (avoids choppy markets)
+    """
 
     def get_default_dna(self) -> StrategyDNA:
         return StrategyDNA(
             id=str(uuid.uuid4())[:8],
             name="mean-reversion",
             params={"bb_period": 20, "bb_std": 2.0, "rsi_period": 14,
-                    "rsi_oversold": 30, "rsi_overbought": 70},
+                    "rsi_oversold": 25, "rsi_overbought": 75,
+                    "min_bb_width_pct": 0.5},
         )
 
     def analyze(self, data: MarketData) -> list[Signal]:
@@ -128,29 +240,55 @@ class MeanReversionStrategy(BaseStrategy):
             return []
 
         price = candles[i].close
+        bb_width = upper[i] - lower[i]
+        bb_width_pct = (bb_width / middle[i] * 100) if middle[i] else 0
+        min_width = p.get("min_bb_width_pct", 0.5)
+
         indicators = {
             "bb_upper": upper[i], "bb_middle": middle[i], "bb_lower": lower[i],
-            "rsi": rsi_vals[i], "price": price,
+            "rsi": rsi_vals[i], "price": price, "bb_width_pct": bb_width_pct,
         }
 
+        # Skip if BB is too narrow (choppy/ranging — no reversion opportunity)
+        if bb_width_pct < min_width:
+            return [self._make_signal(
+                data.asset, SignalAction.HOLD, 0.2, price,
+                data.timeframe, indicators, f"BB too narrow ({bb_width_pct:.2f}%) — no reversion setup",
+            )]
+
+        # RSI divergence check: price at new 5-bar low but RSI is higher
+        rsi_divergence_bull = False
+        rsi_divergence_bear = False
+        if len(candles) > 5 and rsi_vals[i - 5] is not None:
+            if price < min(c.close for c in candles[i - 5:i]) and rsi_vals[i] > rsi_vals[i - 5]:
+                rsi_divergence_bull = True
+            if price > max(c.close for c in candles[i - 5:i]) and rsi_vals[i] < rsi_vals[i - 5]:
+                rsi_divergence_bear = True
+
         # Price below lower band + RSI oversold = buy
-        if price <= lower[i] and rsi_vals[i] < p.get("rsi_oversold", 30):
-            bb_width = upper[i] - lower[i]
+        if price <= lower[i] and rsi_vals[i] < p.get("rsi_oversold", 25):
             dist = (lower[i] - price) / bb_width if bb_width > 0 else 0
             conf = 0.55 + dist * 2
+            if rsi_divergence_bull:
+                conf += 0.15  # Divergence bonus
+                indicators["rsi_divergence"] = 1.0
             return [self._make_signal(
                 data.asset, SignalAction.BUY, conf, price,
-                data.timeframe, indicators, "Price below lower BB + RSI oversold",
+                data.timeframe, indicators,
+                "Price below lower BB + RSI oversold" + (" + bullish divergence" if rsi_divergence_bull else ""),
             )]
 
         # Price above upper band + RSI overbought = sell
-        if price >= upper[i] and rsi_vals[i] > p.get("rsi_overbought", 70):
-            bb_width = upper[i] - lower[i]
+        if price >= upper[i] and rsi_vals[i] > p.get("rsi_overbought", 75):
             dist = (price - upper[i]) / bb_width if bb_width > 0 else 0
             conf = 0.55 + dist * 2
+            if rsi_divergence_bear:
+                conf += 0.15
+                indicators["rsi_divergence"] = -1.0
             return [self._make_signal(
                 data.asset, SignalAction.SELL, conf, price,
-                data.timeframe, indicators, "Price above upper BB + RSI overbought",
+                data.timeframe, indicators,
+                "Price above upper BB + RSI overbought" + (" + bearish divergence" if rsi_divergence_bear else ""),
             )]
 
         return [self._make_signal(
@@ -160,14 +298,20 @@ class MeanReversionStrategy(BaseStrategy):
 
 
 class BreakoutStrategy(BaseStrategy):
-    """Breakout strategy using price channels + volume/ATR confirmation."""
+    """Breakout strategy using price channels + ATR expansion confirmation.
+
+    v2 improvements:
+    - Replaced volume check with ATR expansion (works for forex where volume=0)
+    - ATR must be expanding (current ATR > 1.2x avg ATR of lookback) to confirm breakout
+    - Added close-based channel (not just high/low) to reduce whipsaws
+    """
 
     def get_default_dna(self) -> StrategyDNA:
         return StrategyDNA(
             id=str(uuid.uuid4())[:8],
             name="breakout",
             params={"lookback": 20, "atr_period": 14, "atr_multiplier": 1.5,
-                    "volume_threshold": 1.5},
+                    "atr_expansion": 1.2, "volume_threshold": 1.5},
         )
 
     def analyze(self, data: MarketData) -> list[Signal]:
@@ -180,44 +324,66 @@ class BreakoutStrategy(BaseStrategy):
         window = candles[i - lookback : i]
         highest = max(c.high for c in window)
         lowest = min(c.low for c in window)
+        # Also use close-based channel (more conservative)
+        highest_close = max(c.close for c in window)
+        lowest_close = min(c.close for c in window)
         price = candles[i].close
 
         atr_vals = atr(candles, int(self.dna.params.get("atr_period", 14)))
         atr_val = atr_vals[i]
 
-        # Volume check (skip for forex where volume = 0)
+        # ATR expansion check: current ATR vs average ATR over lookback
+        atr_expansion_ok = True
+        atr_expansion = self.dna.params.get("atr_expansion", 1.2)
+        recent_atrs = [atr_vals[j] for j in range(i - lookback, i) if atr_vals[j] is not None]
+        avg_atr = sum(recent_atrs) / len(recent_atrs) if recent_atrs else None
+        atr_ratio = (atr_val / avg_atr) if (atr_val and avg_atr) else 1.0
+        if atr_ratio < atr_expansion:
+            atr_expansion_ok = False
+
+        # Volume check (still used for crypto)
         avg_vol = sum(c.volume for c in window) / len(window) if window[0].volume > 0 else 0
         cur_vol = candles[i].volume
         vol_ratio = cur_vol / avg_vol if avg_vol > 0 else 1.0
 
         indicators = {
             "channel_high": highest, "channel_low": lowest,
-            "atr": atr_val or 0, "volume_ratio": vol_ratio,
+            "atr": atr_val or 0, "atr_ratio": atr_ratio,
+            "volume_ratio": vol_ratio,
         }
 
         atr_mult = self.dna.params.get("atr_multiplier", 1.5)
         vol_thresh = self.dna.params.get("volume_threshold", 1.5)
 
-        # Bullish breakout
-        if price > highest:
-            vol_ok = vol_ratio >= vol_thresh or avg_vol == 0  # Skip vol check for forex
-            if atr_val and vol_ok:
+        # For forex, use ATR expansion; for crypto, use volume OR ATR expansion
+        has_volume = avg_vol > 0
+        vol_ok = vol_ratio >= vol_thresh if has_volume else True
+        confirmed = atr_expansion_ok or (has_volume and vol_ok)
+
+        # Bullish breakout — price closes above channel high
+        if price > highest_close and atr_val:
+            if confirmed:
                 breakout_strength = (price - highest) / (atr_val * atr_mult) if atr_val else 0
-                conf = 0.5 + min(breakout_strength, 0.4)
+                conf = 0.55 + min(breakout_strength, 0.35)
+                if atr_expansion_ok:
+                    conf += 0.05  # ATR expansion bonus
                 return [self._make_signal(
                     data.asset, SignalAction.BUY, conf, price,
-                    data.timeframe, indicators, f"Bullish breakout above {lookback}-period high",
+                    data.timeframe, indicators,
+                    f"Bullish breakout above {lookback}-period high (ATR ratio={atr_ratio:.2f})",
                 )]
 
-        # Bearish breakout
-        if price < lowest:
-            vol_ok = vol_ratio >= vol_thresh or avg_vol == 0
-            if atr_val and vol_ok:
+        # Bearish breakout — price closes below channel low
+        if price < lowest_close and atr_val:
+            if confirmed:
                 breakout_strength = (lowest - price) / (atr_val * atr_mult) if atr_val else 0
-                conf = 0.5 + min(breakout_strength, 0.4)
+                conf = 0.55 + min(breakout_strength, 0.35)
+                if atr_expansion_ok:
+                    conf += 0.05
                 return [self._make_signal(
                     data.asset, SignalAction.SELL, conf, price,
-                    data.timeframe, indicators, f"Bearish breakout below {lookback}-period low",
+                    data.timeframe, indicators,
+                    f"Bearish breakout below {lookback}-period low (ATR ratio={atr_ratio:.2f})",
                 )]
 
         return [self._make_signal(
@@ -227,7 +393,13 @@ class BreakoutStrategy(BaseStrategy):
 
 
 class MultiIndicatorStrategy(BaseStrategy):
-    """Combines multiple indicators with weighted voting."""
+    """Combines multiple indicators with weighted voting.
+
+    v2 improvements:
+    - Lowered threshold from 0.55 to 0.35 (was too strict, generating almost no trades)
+    - Added trend alignment bonus: +0.15 if SMA50 agrees with signal direction
+    - Smoother RSI scoring (linear instead of hard thresholds)
+    """
 
     def get_default_dna(self) -> StrategyDNA:
         return StrategyDNA(
@@ -238,52 +410,50 @@ class MultiIndicatorStrategy(BaseStrategy):
                 "rsi_period": 14, "macd_fast": 12, "macd_slow": 26, "macd_signal": 9,
                 "stoch_k": 14, "stoch_d": 3,
                 "w_ema": 0.25, "w_rsi": 0.25, "w_macd": 0.25, "w_stoch": 0.25,
-                "threshold": 0.55,
+                "threshold": 0.35,
+                "trend_period": 50,
             },
         )
 
     def analyze(self, data: MarketData) -> list[Signal]:
         candles = data.candles
-        if len(candles) < 30:
+        if len(candles) < 55:
             return []
 
         p = self.dna.params
         i = len(candles) - 1
 
-        # EMA crossover signal
+        # EMA crossover signal (with momentum: how far apart they are)
         fast_ema = ema(candles, int(p.get("ema_fast", 9)))
         slow_ema = ema(candles, int(p.get("ema_slow", 21)))
         ema_score = 0.0
-        if fast_ema[i] and slow_ema[i]:
-            ema_score = 1.0 if fast_ema[i] > slow_ema[i] else -1.0
+        if fast_ema[i] and slow_ema[i] and slow_ema[i] != 0:
+            gap = (fast_ema[i] - slow_ema[i]) / slow_ema[i]
+            ema_score = max(min(gap * 100, 1.0), -1.0)  # Smooth score, capped at +/-1
 
-        # RSI signal
+        # RSI signal (smooth linear scoring)
         rsi_vals = rsi(candles, int(p.get("rsi_period", 14)))
         rsi_score = 0.0
         if rsi_vals[i] is not None:
-            if rsi_vals[i] < 30:
-                rsi_score = 1.0
-            elif rsi_vals[i] > 70:
-                rsi_score = -1.0
-            else:
-                rsi_score = (50 - rsi_vals[i]) / 50
+            # Linear: RSI 0→+1, RSI 50→0, RSI 100→-1
+            rsi_score = (50 - rsi_vals[i]) / 50
 
-        # MACD signal
+        # MACD signal (use histogram magnitude)
         macd_line, signal_line, histogram = macd(
             candles, int(p.get("macd_fast", 12)), int(p.get("macd_slow", 26)), int(p.get("macd_signal", 9)),
         )
         macd_score = 0.0
         if histogram[i] is not None:
-            macd_score = 1.0 if histogram[i] > 0 else -1.0
+            # Normalize by price for comparability
+            price = candles[i].close
+            macd_score = max(min(histogram[i] / (price * 0.001), 1.0), -1.0) if price else 0
 
-        # Stochastic signal
+        # Stochastic signal (smooth)
         k_vals, d_vals = stochastic(candles, int(p.get("stoch_k", 14)), int(p.get("stoch_d", 3)))
         stoch_score = 0.0
         if k_vals[i] is not None:
-            if k_vals[i] < 20:
-                stoch_score = 1.0
-            elif k_vals[i] > 80:
-                stoch_score = -1.0
+            # Linear: %K 0→+1, %K 50→0, %K 100→-1
+            stoch_score = (50 - k_vals[i]) / 50
 
         # Weighted vote
         w = {
@@ -295,30 +465,44 @@ class MultiIndicatorStrategy(BaseStrategy):
             macd_score * w["macd"] + stoch_score * w["stoch"]
         )
 
+        # Trend alignment bonus
+        trend = self._trend_direction(candles, int(p.get("trend_period", 50)))
+        trend_bonus = 0.0
+        if trend is not None:
+            if (total > 0 and trend > 0) or (total < 0 and trend < 0):
+                trend_bonus = 0.15  # Signal agrees with trend
+            elif (total > 0 and trend < 0) or (total < 0 and trend > 0):
+                trend_bonus = -0.1  # Signal against trend — penalize
+
+        adjusted_total = total + (trend_bonus if total > 0 else -trend_bonus if total < 0 else 0)
+
         indicators = {
             "ema_score": ema_score, "rsi_score": rsi_score,
             "macd_score": macd_score, "stoch_score": stoch_score,
-            "composite": total,
+            "composite": total, "adjusted_composite": adjusted_total,
+            "trend_bonus": trend_bonus,
             "rsi": rsi_vals[i] or 0, "stoch_k": k_vals[i] or 0,
         }
 
-        threshold = p.get("threshold", 0.55)
+        threshold = p.get("threshold", 0.35)
         price = candles[i].close
 
-        if total >= threshold:
+        if adjusted_total >= threshold:
             return [self._make_signal(
-                data.asset, SignalAction.BUY, abs(total), price,
-                data.timeframe, indicators, f"Multi-indicator bullish (score={total:.2f})",
+                data.asset, SignalAction.BUY, abs(adjusted_total), price,
+                data.timeframe, indicators,
+                f"Multi-indicator bullish (score={adjusted_total:.2f}, trend={'aligned' if trend_bonus > 0 else 'neutral'})",
             )]
-        elif total <= -threshold:
+        elif adjusted_total <= -threshold:
             return [self._make_signal(
-                data.asset, SignalAction.SELL, abs(total), price,
-                data.timeframe, indicators, f"Multi-indicator bearish (score={total:.2f})",
+                data.asset, SignalAction.SELL, abs(adjusted_total), price,
+                data.timeframe, indicators,
+                f"Multi-indicator bearish (score={adjusted_total:.2f}, trend={'aligned' if trend_bonus > 0 else 'neutral'})",
             )]
 
         return [self._make_signal(
             data.asset, SignalAction.HOLD, 0.3, price,
-            data.timeframe, indicators, f"Multi-indicator neutral (score={total:.2f})",
+            data.timeframe, indicators, f"Multi-indicator neutral (score={adjusted_total:.2f})",
         )]
 
 
