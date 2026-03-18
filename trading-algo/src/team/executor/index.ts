@@ -19,7 +19,7 @@ export class Executor {
 
   constructor() {
     this.mode = config.tradingMode;
-    this.paperTrader   = new PaperTrader({ initialCapital: config.initialCapital });
+    this.paperTrader   = new PaperTrader({ initialCapital: config.initialCapital, maxOpenPositions: config.maxOpenPositions });
     this.liveExecutor  = new LiveExecutor();
     // Use OANDA for live forex execution when credentials are configured
     this.oandaExecutor = config.oandaApiToken ? new OandaExecutor() : null;

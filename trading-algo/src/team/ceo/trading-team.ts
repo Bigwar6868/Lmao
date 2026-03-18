@@ -176,6 +176,13 @@ export class TradingTeam extends TeamBase {
   private selectBestSignals(
     allSignals: Array<{ signal: Signal; agentId: AgentId }>,
   ): Array<{ signal: Signal; agentId: AgentId }> {
+    // Build open-position index for conflict detection
+    const portfolio = this.executor.getPortfolio();
+    const openPositions = new Map<string, Position>();
+    for (const pos of portfolio.positions) {
+      if (pos.status === 'open') openPositions.set(pos.asset.symbol, pos);
+    }
+
     // Group by asset
     const byAsset = new Map<string, Array<{ signal: Signal; agentId: AgentId }>>();
     for (const entry of allSignals) {
@@ -185,15 +192,48 @@ export class TradingTeam extends TeamBase {
       byAsset.set(key, list);
     }
 
-    // Pick highest confidence per asset
+    // Pick highest confidence per asset, with conflict resolution
     const best: Array<{ signal: Signal; agentId: AgentId }> = [];
-    for (const [, entries] of byAsset) {
+    for (const [symbol, entries] of byAsset) {
       entries.sort((a, b) => b.signal.confidence - a.signal.confidence);
       const top = entries[0];
-      // Only include if confidence meets minimum threshold
-      if (top.signal.confidence > 0.35) {
-        best.push(top);
+      if (top.signal.confidence <= 0.35) continue;
+
+      // Conflict check: reversal signal against an open position
+      const openPos = openPositions.get(symbol);
+      if (openPos && top.signal.action !== 'HOLD') {
+        const isReversal =
+          (openPos.side === 'buy'  && top.signal.action === 'SELL') ||
+          (openPos.side === 'sell' && top.signal.action === 'BUY');
+
+        if (isReversal) {
+          const conf = top.signal.confidence;
+          if (conf < 0.75) {
+            // Low conviction — suppress, let the profitable position run
+            this.log.info(
+              { symbol, confidence: conf.toFixed(2) },
+              'Reversal signal suppressed — insufficient conviction (<0.75) against open position',
+            );
+            continue;
+          }
+          if (conf < 0.85) {
+            // Medium conviction — allow close only; log intent
+            this.log.info(
+              { symbol, confidence: conf.toFixed(2) },
+              'Medium reversal (0.75–0.85) — will close position, no immediate reverse',
+            );
+            // signal falls through: closes the open position via SELL
+          } else {
+            // High conviction — full reversal allowed next cycle
+            this.log.info(
+              { symbol, confidence: conf.toFixed(2) },
+              'High conviction reversal (≥0.85) — closing position',
+            );
+          }
+        }
       }
+
+      best.push(top);
     }
 
     return best;

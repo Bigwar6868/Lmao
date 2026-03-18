@@ -40,6 +40,7 @@ export const config = {
   initialCapital: Number(process.env.INITIAL_CAPITAL ?? 10000),
   maxPositionSizePct: Number(process.env.MAX_POSITION_SIZE_PCT ?? 5),
   maxDrawdownPct: Number(process.env.MAX_DRAWDOWN_PCT ?? 20),
+  maxOpenPositions: Number(process.env.MAX_OPEN_POSITIONS ?? 20),
 
   // System
   logLevel: process.env.LOG_LEVEL ?? 'info',

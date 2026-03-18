@@ -1,7 +1,7 @@
 import type { Order, Position, Portfolio, Signal, RiskAssessment } from '../../shared/types.js';
 import type { ExecutorConfig, TradeExecution } from './types.js';
 import { createOrderFromSignal, fillOrder } from './order.js';
-import { generateId } from '../../shared/utils.js';
+import { generateId, roundTo } from '../../shared/utils.js';
 import { createModuleLogger } from '../../shared/logger.js';
 import { eventBus } from '../../shared/events.js';
 
@@ -15,6 +15,10 @@ export class PaperTrader {
   private orderHistory: Order[] = [];
   private config: ExecutorConfig;
   private peakEquity: number;
+  /** Highest price seen for each open position (for trailing stops). */
+  private highWatermarks = new Map<string, number>();
+  /** Initial ATR stop distance at entry price (entry - stopLoss). */
+  private initialStopDistances = new Map<string, number>();
 
   constructor(config?: Partial<ExecutorConfig>) {
     this.config = {
@@ -53,9 +57,11 @@ export class PaperTrader {
       return { order: {} as Order, portfolio: this.portfolio, success: false, error: 'HOLD signal' };
     }
 
-    // Check max positions
+    // Check max positions — try evicting a losing position before hard-rejecting
     if (signal.action === 'BUY' && this.portfolio.positions.length >= this.config.maxOpenPositions) {
-      return { order: {} as Order, portfolio: this.portfolio, success: false, error: 'Max positions reached' };
+      if (!this.evictWorstLoser()) {
+        return { order: {} as Order, portfolio: this.portfolio, success: false, error: 'Max positions reached — no losers to evict' };
+      }
     }
 
     const quantity = risk.recommendedSize / signal.price;
@@ -95,6 +101,11 @@ export class PaperTrader {
       this.portfolio.availableCapital -= totalCost;
       this.portfolio.lastUpdated = Date.now();
 
+      // Seed trailing stop tracking
+      this.highWatermarks.set(position.id, fillPrice);
+      const stopDist = risk.stopLossPrice > 0 ? fillPrice - risk.stopLossPrice : 0;
+      if (stopDist > 0) this.initialStopDistances.set(position.id, stopDist);
+
       await eventBus.emit('order:filled', filledOrder, 'paper-trader');
       await eventBus.emit('position:opened', position, 'paper-trader');
 
@@ -121,6 +132,9 @@ export class PaperTrader {
       position.status = 'closed';
       position.closedAt = Date.now();
       position.currentPrice = fillPrice;
+
+      this.highWatermarks.delete(position.id);
+      this.initialStopDistances.delete(position.id);
 
       this.portfolio.availableCapital += fillPrice * position.quantity - commission;
       this.portfolio.totalPnl += pnl;
@@ -152,6 +166,19 @@ export class PaperTrader {
       if (price !== undefined) {
         pos.currentPrice = price;
         pos.unrealizedPnl = (price - pos.entryPrice) * pos.quantity;
+
+        // Ratchet trailing stop upward for long positions
+        if (pos.side === 'buy' && pos.stopLoss !== undefined) {
+          const hw = this.highWatermarks.get(pos.id) ?? pos.entryPrice;
+          if (price > hw) {
+            this.highWatermarks.set(pos.id, price);
+            const stopDist = this.initialStopDistances.get(pos.id);
+            if (stopDist) {
+              const newStop = roundTo(price - stopDist, 6);
+              if (newStop > pos.stopLoss) pos.stopLoss = newStop;
+            }
+          }
+        }
       }
     }
 
@@ -207,6 +234,43 @@ export class PaperTrader {
         approved: true, reason: 'Closing position',
       });
     }
+  }
+
+  /**
+   * Evict the worst losing position (>0.3% loss) to free capacity for a better signal.
+   * Returns true if a position was closed, false if all positions are profitable.
+   */
+  private evictWorstLoser(): boolean {
+    const losers = this.portfolio.positions.filter(
+      (p) => p.unrealizedPnl < -(p.entryPrice * p.quantity * 0.003),
+    );
+    if (losers.length === 0) return false;
+
+    const worst = losers.reduce((a, b) => (a.unrealizedPnl < b.unrealizedPnl ? a : b));
+    const price = worst.currentPrice;
+    const commission = price * worst.quantity * this.config.defaultCommission;
+    const pnl = (price - worst.entryPrice) * worst.quantity - commission;
+
+    worst.realizedPnl = pnl;
+    worst.status = 'closed';
+    worst.closedAt = Date.now();
+
+    const idx = this.portfolio.positions.indexOf(worst);
+    this.portfolio.positions.splice(idx, 1);
+    this.portfolio.availableCapital += price * worst.quantity - commission;
+    this.portfolio.totalPnl += pnl;
+    this.portfolio.totalPnlPct = (this.portfolio.totalPnl / this.config.initialCapital) * 100;
+    this.portfolio.lastUpdated = Date.now();
+
+    this.highWatermarks.delete(worst.id);
+    this.initialStopDistances.delete(worst.id);
+
+    log.info(
+      { symbol: worst.asset.symbol, pnl: pnl.toFixed(2), remaining: this.portfolio.positions.length },
+      'Evicted losing position to free slot for new signal',
+    );
+    void eventBus.emit('position:closed', worst, 'paper-trader');
+    return true;
   }
 
   getPortfolio(): Portfolio {
