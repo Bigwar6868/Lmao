@@ -14,7 +14,7 @@ import { DiagnosticsEngine } from './team/diagnostics/index.js';
 import { eventBus } from './shared/events.js';
 import { createModuleLogger } from './shared/logger.js';
 import { attachLiveFeed, registerAgentName, printSystemEvent, printSeparator, printAgentStatusTable } from './shared/live-feed.js';
-import type { AssetInfo, Timeframe, Signal, MarketData, Candle } from './shared/types.js';
+import type { AssetInfo, Timeframe, Signal, MarketData, MacroEnvironment, Candle } from './shared/types.js';
 import type { AgentId } from './shared/agent-types.js';
 
 const log = createModuleLogger('orchestrator');
@@ -33,6 +33,16 @@ const log = createModuleLogger('orchestrator');
  * All agents can discuss with each other across teams.
  * CEO approves/vetoes requests and issues directives.
  */
+/** Short-lived cache of the last analyze cycle result, shared between scanner and auto-trader */
+interface AnalysisCache {
+  signals: Signal[];
+  marketDataMap: Map<string, MarketData>;
+  assets: AssetInfo[];
+  timeframe: Timeframe;
+  timestamp: number;
+  macro?: MacroEnvironment;
+}
+
 export class TradingSystem {
   // Core
   private network = new AgentNetwork();
@@ -49,6 +59,10 @@ export class TradingSystem {
   private spawner!: AgentSpawner;
   private agents = new Map<AgentId, TradingAgent>();
   private strategies = new Map<string, import('./shared/types.js').Strategy>();
+
+  // Signal cache — reused by tradingCycle when fresh (avoids redundant full scan)
+  private analysisCache: AnalysisCache | null = null;
+  private readonly analysisCacheTtlMs = 90_000; // 90s — fresh enough for a 60s cycle interval
 
   constructor() {
     // Attach live feed to network — shows agent communication in real-time
@@ -295,6 +309,9 @@ export class TradingSystem {
       sellSignals: signals.filter(s => s.action === 'SELL').length,
     }, 'Analysis cycle complete');
 
+    // Populate cache so the next tradingCycle can skip re-analysis if fresh
+    this.analysisCache = { signals, marketDataMap, assets, timeframe, timestamp: Date.now() };
+
     return { signals, marketDataMap };
   }
 
@@ -318,21 +335,39 @@ export class TradingSystem {
     printSeparator(`CYCLE ${cycle} — ${new Date().toLocaleTimeString()}`);
     printSystemEvent(`Starting cycle ${cycle} with ${this.agents.size} agents`);
 
-    // 1. Research team fetches data for the full asset universe
-    const macro = await this.researchTeam.getMacroEnvironment();
-    const marketDataMap = await this.researchTeam.fetchAllData(assets, timeframe);
+    // 1. Check analysis cache — reuse recent scanner results to avoid redundant full scan
+    const cache = this.analysisCache;
+    const cacheHit =
+      cache !== null &&
+      cache.timeframe === timeframe &&
+      Date.now() - cache.timestamp < this.analysisCacheTtlMs;
 
-    // 2. Research team generates signals
-    const allSignals = await this.researchTeam.analyzeAll(marketDataMap, macro);
+    let marketDataMap: Map<string, MarketData>;
+    let allSignals: Signal[];
+    let macro: MacroEnvironment;
+
+    if (cacheHit) {
+      log.info({ cycle, ageMs: Date.now() - cache!.timestamp }, 'Using cached analysis — skipping full scan');
+      printSystemEvent('Using cached signals from recent scan (fast path)');
+      marketDataMap = cache!.marketDataMap;
+      allSignals = cache!.signals;
+      macro = await this.researchTeam.getMacroEnvironment();
+    } else {
+      // Full analysis path
+      macro = await this.researchTeam.getMacroEnvironment();
+      marketDataMap = await this.researchTeam.fetchAllData(assets, timeframe);
+      allSignals = await this.researchTeam.analyzeAll(marketDataMap, macro);
+      this.analysisCache = { signals: allSignals, marketDataMap, assets, timeframe, timestamp: Date.now() };
+    }
 
     // 2b. Feed brain context to teams — they use this for autonomous thinking
     this.researchTeam.updateBrainContext(marketDataMap, allSignals, macro);
     this.tradingTeam.updateBrainContext(marketDataMap, allSignals, macro);
 
-    // 2c. Research team thinks about what it found (AI-powered if available)
-    await this.researchTeam.brain.thinkAsync('What do the current signals tell us about market conditions?', {
+    // 2c. Research team thinks in the background — does not block the trading path
+    this.researchTeam.brain.thinkAsync('What do the current signals tell us about market conditions?', {
       marketData: marketDataMap, signals: allSignals, macro,
-    });
+    }).catch((err: Error) => log.warn({ err: err.message }, 'Background brain thinking failed'));
 
     // 3. Trading Team autonomously selects which assets to trade
     printSystemEvent(`Research complete: ${marketDataMap.size} assets scanned, ${allSignals.length} signals found`);
