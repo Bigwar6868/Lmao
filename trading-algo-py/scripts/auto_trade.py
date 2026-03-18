@@ -24,7 +24,8 @@ from config.settings import config
 from config.assets import FOREX_ASSETS
 from shared.types import MarketData, SignalAction, Portfolio
 from team.market_analyst.oanda import OandaDataFetcher
-from team.technical_strategist.strategies import get_all_strategies
+from team.technical_strategist.strategies import get_all_strategies, create_strategy
+from team.technical_strategist.selector import select_best_strategies, get_strategy_for_asset
 from team.risk_manager.risk import RiskManager
 from team.executor.oanda import OandaExecutor
 
@@ -45,6 +46,7 @@ def run(
     min_confidence: float = DEFAULT_MIN_CONFIDENCE,
     timeframe: str = DEFAULT_TIMEFRAME,
     dry_run: bool = False,
+    auto_select: bool = True,
 ) -> dict:
     """Run a single auto-trade cycle.
 
@@ -59,6 +61,13 @@ def run(
     executor = OandaExecutor()
     risk_mgr = RiskManager()
     strategies = get_all_strategies()
+
+    # Auto-select: load best strategy per asset from backtest results
+    selection = None
+    if auto_select:
+        selection = select_best_strategies()
+        if selection.mapping:
+            log.info("Auto-select ON — %d assets mapped to best strategies", len(selection.mapping))
 
     summary = {
         "signals_found": 0,
@@ -112,7 +121,14 @@ def run(
                 last_updated=int(time.time() * 1000),
             )
 
-            for strategy in strategies:
+            # Pick strategies to run: auto-select best, or run all
+            if selection and selection.mapping:
+                best_name = get_strategy_for_asset(selection, asset.symbol)
+                run_strategies = [create_strategy(best_name)]
+            else:
+                run_strategies = strategies
+
+            for strategy in run_strategies:
                 try:
                     signals = strategy.analyze(market_data)
                     for sig in signals:
@@ -219,11 +235,13 @@ def main() -> None:
         help=f"Candle timeframe (default: {DEFAULT_TIMEFRAME}, env: TRADE_TIMEFRAME)",
     )
     parser.add_argument("--dry-run", action="store_true", help="Scan and assess but don't execute")
+    parser.add_argument("--no-auto-select", action="store_true", help="Disable auto-strategy selection (use all strategies)")
     args = parser.parse_args()
 
     log.info(
-        "Auto-trader starting | max_positions=%d | min_conf=%.0f%% | tf=%s | dry_run=%s",
-        args.max_positions, args.min_confidence * 100, args.timeframe, args.dry_run,
+        "Auto-trader starting | max_positions=%d | min_conf=%.0f%% | tf=%s | dry_run=%s | auto_select=%s",
+        args.max_positions, args.min_confidence * 100, args.timeframe,
+        args.dry_run, not args.no_auto_select,
     )
 
     run(
@@ -231,6 +249,7 @@ def main() -> None:
         min_confidence=args.min_confidence,
         timeframe=args.timeframe,
         dry_run=args.dry_run,
+        auto_select=not args.no_auto_select,
     )
 
 

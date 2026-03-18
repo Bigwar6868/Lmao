@@ -14,7 +14,10 @@ from config.assets import ALL_ASSETS, FOREX_ASSETS, CRYPTO_ASSETS
 from shared.types import SignalAction
 from shared.events import event_bus
 from team.market_analyst.analyst import MarketAnalyst
-from team.technical_strategist.strategies import get_all_strategies
+from team.technical_strategist.strategies import get_all_strategies, create_strategy
+from team.technical_strategist.selector import (
+    select_best_strategies, get_strategy_for_asset, print_selection_report,
+)
 from team.risk_manager.risk import RiskManager
 from team.executor.executor import Executor
 
@@ -30,17 +33,29 @@ log = logging.getLogger("orchestrator")
 class TradingOrchestrator:
     """Main orchestrator — runs the trading cycle."""
 
-    def __init__(self) -> None:
+    def __init__(self, auto_select: bool = True) -> None:
         self.analyst = MarketAnalyst()
         self.strategies = get_all_strategies()
         self.risk_manager = RiskManager()
         self.executor = Executor()
         self.cycle_count = 0
+        self.auto_select = auto_select
+        self.selection = None
+
+        if auto_select:
+            self.selection = select_best_strategies()
+            if self.selection.mapping:
+                log.info(
+                    "Auto-select ON — %d assets mapped to best strategies",
+                    len(self.selection.mapping),
+                )
+            else:
+                log.info("Auto-select: no backtest data — using all strategies")
 
         log.info(
-            "TradingOrchestrator initialised | mode=%s | cloud=%s | strategies=%d | assets=%d",
+            "TradingOrchestrator initialised | mode=%s | cloud=%s | strategies=%d | assets=%d | auto_select=%s",
             config.trading_mode, config.cloud_mode,
-            len(self.strategies), len(ALL_ASSETS),
+            len(self.strategies), len(ALL_ASSETS), auto_select,
         )
 
     def run_cycle(self, assets=None, timeframe: str | None = None) -> dict:
@@ -56,17 +71,30 @@ class TradingOrchestrator:
         market_data_list = self.analyst.fetch_all(target_assets, tf)
         log.info("Fetched data for %d/%d assets", len(market_data_list), len(target_assets))
 
-        # 2. Generate signals
+        # 2. Generate signals (auto-select best strategy per asset, or use all)
         all_signals = []
         for data in market_data_list:
-            for strategy in self.strategies:
+            if self.auto_select and self.selection and self.selection.mapping:
+                # Only run the best strategy for this asset
+                best_name = get_strategy_for_asset(self.selection, data.asset.symbol)
                 try:
+                    strategy = create_strategy(best_name)
                     signals = strategy.analyze(data)
                     for s in signals:
                         if s.action != SignalAction.HOLD:
                             all_signals.append((s, data))
                 except Exception as e:
-                    log.error("Strategy %s error on %s: %s", strategy.config.name, data.asset.symbol, e)
+                    log.error("Strategy %s error on %s: %s", best_name, data.asset.symbol, e)
+            else:
+                # Fallback: run all strategies
+                for strategy in self.strategies:
+                    try:
+                        signals = strategy.analyze(data)
+                        for s in signals:
+                            if s.action != SignalAction.HOLD:
+                                all_signals.append((s, data))
+                    except Exception as e:
+                        log.error("Strategy %s error on %s: %s", strategy.config.name, data.asset.symbol, e)
 
         log.info("Generated %d actionable signals", len(all_signals))
 
@@ -178,9 +206,13 @@ def main():
         elif cmd == "analyze":
             orchestrator.run_cycle()
 
+        elif cmd == "auto-select":
+            selection = select_best_strategies()
+            print_selection_report(selection)
+
         else:
             print(f"Unknown command: {cmd}")
-            print("Usage: python main.py [backtest|paper-trade|evolve|analyze]")
+            print("Usage: python main.py [backtest|paper-trade|evolve|analyze|auto-select]")
     else:
         # Default: single cycle
         orchestrator.run_cycle()
