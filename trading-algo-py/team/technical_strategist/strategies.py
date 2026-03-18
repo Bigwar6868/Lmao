@@ -19,7 +19,12 @@ from shared.types import (
     AssetInfo, Candle, MarketData, Signal, SignalAction,
     StrategyConfig, StrategyDNA,
 )
-from shared.indicators import sma, ema, rsi, macd, atr, bollinger_bands, stochastic
+from shared.indicators import (
+    sma, ema, rsi, macd, atr, bollinger_bands, stochastic,
+    detect_swing_points, detect_fair_value_gaps, detect_liquidity_sweeps,
+    detect_displacement, detect_market_structure, detect_order_blocks,
+    premium_discount_zone, is_in_ote_zone,
+)
 
 log = logging.getLogger(__name__)
 
@@ -506,6 +511,250 @@ class MultiIndicatorStrategy(BaseStrategy):
         )]
 
 
+class SMCStrategy(BaseStrategy):
+    """Smart Money Concepts / ICT strategy.
+
+    Implements the core ICT 2022 model:
+    1. Detect market structure (BOS/CHoCH) for trend bias
+    2. Identify liquidity sweeps (stop hunts)
+    3. Confirm with displacement (strong institutional candle)
+    4. Enter on retracement to FVG or order block
+    5. Use premium/discount + OTE zone for entry filtering
+    6. Target opposing liquidity pool
+
+    Codable ICT concepts used:
+    - Market structure (BOS/CHoCH) for trend direction
+    - Fair Value Gaps for entry zones
+    - Liquidity sweeps for manipulation detection
+    - Displacement for institutional confirmation
+    - Order blocks as confluence entry zones
+    - Premium/discount zones for directional bias
+    - OTE (62%-79% retracement) for optimal entries
+    """
+
+    def get_default_dna(self) -> StrategyDNA:
+        return StrategyDNA(
+            id=str(uuid.uuid4())[:8],
+            name="smc",
+            params={
+                "swing_lookback": 5,
+                "atr_period": 14,
+                "displacement_threshold": 1.5,
+                "min_reversal_pct": 0.3,
+                "fvg_recency": 20,        # only consider FVGs from last N candles
+                "ob_recency": 20,         # only consider OBs from last N candles
+                "structure_weight": 0.25,  # weight for market structure confluence
+                "fvg_weight": 0.30,       # weight for FVG entry
+                "sweep_weight": 0.25,     # weight for liquidity sweep
+                "pd_weight": 0.20,        # weight for premium/discount zone
+                "min_confidence": 0.45,
+            },
+        )
+
+    def analyze(self, data: MarketData) -> list[Signal]:
+        candles = data.candles
+        if len(candles) < 60:
+            return []
+
+        p = self.dna.params
+        i = len(candles) - 1
+        price = candles[i].close
+        swing_lb = int(p.get("swing_lookback", 5))
+        atr_period = int(p.get("atr_period", 14))
+        disp_threshold = p.get("displacement_threshold", 1.5)
+
+        # --- 1. Market Structure ---
+        structure_breaks = detect_market_structure(candles, swing_lb, atr_period)
+        latest_break = structure_breaks[-1] if structure_breaks else None
+        structure_bias = 0.0  # positive = bullish, negative = bearish
+        has_choch = False
+
+        if latest_break:
+            # Recency: only consider breaks in last 30 candles
+            if i - latest_break.index <= 30:
+                structure_bias = 1.0 if latest_break.is_bullish else -1.0
+                has_choch = latest_break.is_choch
+                # Displacement-confirmed structure shift is stronger
+                if latest_break.displacement > 1.0:
+                    structure_bias *= 1.0 + min(latest_break.displacement - 1.0, 1.0) * 0.5
+
+        # --- 2. Liquidity Sweeps ---
+        sweeps = detect_liquidity_sweeps(candles, swing_lb, p.get("min_reversal_pct", 0.3))
+        recent_sweep = None
+        sweep_score = 0.0
+
+        for s in reversed(sweeps):
+            if i - s.index <= 10:  # only last 10 candles
+                recent_sweep = s
+                # Sell-side sweep (below lows) = bullish setup
+                # Buy-side sweep (above highs) = bearish setup
+                sweep_score = -1.0 if s.is_buy_side else 1.0
+                sweep_score *= min(s.reversal_strength * 100, 2.0)
+                break
+
+        # --- 3. Displacement ---
+        displacements = detect_displacement(candles, atr_period, disp_threshold)
+        recent_displacement = None
+        for d_idx, d_strength, d_bull in reversed(displacements):
+            if i - d_idx <= 5:
+                recent_displacement = (d_idx, d_strength, d_bull)
+                break
+
+        # --- 4. Fair Value Gaps ---
+        fvgs = detect_fair_value_gaps(candles)
+        fvg_recency = int(p.get("fvg_recency", 20))
+        fvg_score = 0.0
+        active_fvg = None
+
+        for fvg in reversed(fvgs):
+            if i - fvg.index > fvg_recency:
+                break
+            # Check if current price is inside or touching the FVG
+            if fvg.bottom <= price <= fvg.top:
+                active_fvg = fvg
+                if fvg.is_bullish:
+                    # Price retracing into bullish FVG = buy opportunity
+                    fvg_score = 1.0
+                    # Bonus if price is near CE (consequent encroachment)
+                    ce_distance = abs(price - fvg.ce) / (fvg.top - fvg.bottom) if fvg.top != fvg.bottom else 0
+                    if ce_distance < 0.3:
+                        fvg_score += 0.3  # Near CE = stronger
+                else:
+                    # Price retracing into bearish FVG = sell opportunity
+                    fvg_score = -1.0
+                    ce_distance = abs(price - fvg.ce) / (fvg.top - fvg.bottom) if fvg.top != fvg.bottom else 0
+                    if ce_distance < 0.3:
+                        fvg_score -= 0.3
+                break
+
+        # --- 5. Order Blocks ---
+        obs = detect_order_blocks(candles, swing_lb, atr_period, disp_threshold)
+        ob_recency = int(p.get("ob_recency", 20))
+        ob_confluence = False
+
+        for ob in reversed(obs):
+            if i - ob.index > ob_recency:
+                break
+            # Price touching an order block
+            if ob.low <= price <= ob.high:
+                if ob.is_bullish and fvg_score > 0:
+                    ob_confluence = True  # Bullish OB + bullish FVG = strong confluence
+                elif not ob.is_bullish and fvg_score < 0:
+                    ob_confluence = True
+                break
+
+        # --- 6. Premium / Discount Zone ---
+        swings = detect_swing_points(candles, swing_lb)
+        pd_score = 0.0
+        in_ote = False
+
+        recent_highs = [s for s in swings if s.is_high and i - s.index <= 50]
+        recent_lows = [s for s in swings if not s.is_high and i - s.index <= 50]
+
+        if recent_highs and recent_lows:
+            swing_high = max(s.price for s in recent_highs)
+            swing_low = min(s.price for s in recent_lows)
+            eq, is_discount, zone_pct = premium_discount_zone(swing_high, swing_low, price)
+
+            if is_discount:
+                pd_score = zone_pct  # deeper discount = stronger buy signal
+            else:
+                pd_score = -zone_pct  # deeper premium = stronger sell signal
+
+            # OTE check
+            if structure_bias > 0:
+                in_ote = is_in_ote_zone(swing_high, swing_low, price, is_bullish=True)
+            elif structure_bias < 0:
+                in_ote = is_in_ote_zone(swing_high, swing_low, price, is_bullish=False)
+
+        # --- 7. Composite Signal ---
+        w_struct = p.get("structure_weight", 0.25)
+        w_fvg = p.get("fvg_weight", 0.30)
+        w_sweep = p.get("sweep_weight", 0.25)
+        w_pd = p.get("pd_weight", 0.20)
+
+        composite = (
+            structure_bias * w_struct +
+            fvg_score * w_fvg +
+            sweep_score * w_sweep +
+            pd_score * w_pd
+        )
+
+        # Confluence bonuses
+        if ob_confluence:
+            composite *= 1.2  # OB + FVG overlap (Unicorn setup)
+        if in_ote:
+            composite *= 1.15  # Price in OTE zone
+        if has_choch and recent_displacement:
+            composite *= 1.1  # CHoCH + displacement = MSS confirmation
+        if recent_sweep and recent_displacement:
+            # Sweep followed by displacement = classic ICT setup
+            _, d_strength, d_bull = recent_displacement
+            if (not recent_sweep.is_buy_side and d_bull) or (recent_sweep.is_buy_side and not d_bull):
+                composite *= 1.15
+
+        indicators = {
+            "structure_bias": structure_bias,
+            "fvg_score": fvg_score,
+            "sweep_score": sweep_score,
+            "pd_score": pd_score,
+            "composite": composite,
+            "has_choch": 1.0 if has_choch else 0.0,
+            "ob_confluence": 1.0 if ob_confluence else 0.0,
+            "in_ote": 1.0 if in_ote else 0.0,
+            "has_displacement": 1.0 if recent_displacement else 0.0,
+            "has_sweep": 1.0 if recent_sweep else 0.0,
+        }
+
+        min_conf = p.get("min_confidence", 0.45)
+
+        if composite >= min_conf:
+            reasons = []
+            if structure_bias > 0:
+                reasons.append("bullish structure" + (" CHoCH" if has_choch else " BOS"))
+            if fvg_score > 0:
+                reasons.append("bullish FVG entry")
+            if sweep_score > 0:
+                reasons.append("sell-side sweep")
+            if pd_score > 0:
+                reasons.append("discount zone")
+            if in_ote:
+                reasons.append("OTE zone")
+            if ob_confluence:
+                reasons.append("OB confluence")
+            return [self._make_signal(
+                data.asset, SignalAction.BUY, min(abs(composite), 1.0), price,
+                data.timeframe, indicators,
+                "SMC bullish: " + ", ".join(reasons) if reasons else "SMC bullish confluence",
+            )]
+
+        elif composite <= -min_conf:
+            reasons = []
+            if structure_bias < 0:
+                reasons.append("bearish structure" + (" CHoCH" if has_choch else " BOS"))
+            if fvg_score < 0:
+                reasons.append("bearish FVG entry")
+            if sweep_score < 0:
+                reasons.append("buy-side sweep")
+            if pd_score < 0:
+                reasons.append("premium zone")
+            if in_ote:
+                reasons.append("OTE zone")
+            if ob_confluence:
+                reasons.append("OB confluence")
+            return [self._make_signal(
+                data.asset, SignalAction.SELL, min(abs(composite), 1.0), price,
+                data.timeframe, indicators,
+                "SMC bearish: " + ", ".join(reasons) if reasons else "SMC bearish confluence",
+            )]
+
+        return [self._make_signal(
+            data.asset, SignalAction.HOLD, 0.2, price,
+            data.timeframe, indicators,
+            f"SMC no confluence (score={composite:.2f})",
+        )]
+
+
 # ============================================================
 # Strategy Factory
 # ============================================================
@@ -515,6 +764,7 @@ ALL_STRATEGIES: dict[str, type[BaseStrategy]] = {
     "mean-reversion": MeanReversionStrategy,
     "breakout": BreakoutStrategy,
     "multi-indicator": MultiIndicatorStrategy,
+    "smc": SMCStrategy,
 }
 
 

@@ -67,6 +67,16 @@ PARAM_BOUNDS: dict[str, tuple[float, float]] = {
     "threshold": (0.15, 0.6),
     "min_confidence": (0.3, 0.8),
     "adx_threshold": (10, 35),
+    # SMC parameters
+    "swing_lookback": (3, 10),
+    "displacement_threshold": (1.0, 3.0),
+    "min_reversal_pct": (0.1, 1.0),
+    "fvg_recency": (10, 40),
+    "ob_recency": (10, 40),
+    "structure_weight": (0.05, 0.5),
+    "fvg_weight": (0.05, 0.5),
+    "sweep_weight": (0.05, 0.5),
+    "pd_weight": (0.05, 0.5),
 }
 
 
