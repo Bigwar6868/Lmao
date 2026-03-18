@@ -113,6 +113,12 @@ export class PaperTrader {
         { symbol: signal.asset.symbol, side: 'buy', price: fillPrice, quantity, strategy: signal.strategy },
         'Paper trade executed'
       );
+      console.log(
+        `[TRADE] BUY  ${signal.asset.symbol.padEnd(12)} @$${fillPrice.toFixed(4)}` +
+        `  qty: ${quantity.toFixed(6)}  strategy: ${signal.strategy}` +
+        (risk.stopLossPrice ? `  SL: $${risk.stopLossPrice.toFixed(4)}` : '') +
+        (risk.takeProfitPrice ? `  TP: $${risk.takeProfitPrice.toFixed(4)}` : '')
+      );
 
       return { order: filledOrder, position, portfolio: this.portfolio, success: true };
     } else {
@@ -151,6 +157,11 @@ export class PaperTrader {
       log.info(
         { symbol: signal.asset.symbol, side: 'sell', price: fillPrice, pnl: pnl.toFixed(2), strategy: signal.strategy },
         'Paper position closed'
+      );
+      const pnlSign = pnl >= 0 ? '+' : '';
+      console.log(
+        `[TRADE] SELL ${signal.asset.symbol.padEnd(12)} @$${fillPrice.toFixed(4)}` +
+        `  PnL: ${pnlSign}$${pnl.toFixed(2)}  strategy: ${signal.strategy}`
       );
 
       return { order: filledOrder, position, portfolio: this.portfolio, success: true };
@@ -207,9 +218,11 @@ export class PaperTrader {
 
       if (pos.stopLoss && price <= pos.stopLoss) {
         log.info({ symbol: pos.asset.symbol, price, stopLoss: pos.stopLoss }, 'Stop loss triggered');
+        console.log(`[STOP-LOSS] ${pos.asset.symbol}  price: $${price.toFixed(4)}  SL: $${pos.stopLoss.toFixed(4)}`);
         toClose.push(pos);
       } else if (pos.takeProfit && price >= pos.takeProfit) {
         log.info({ symbol: pos.asset.symbol, price, takeProfit: pos.takeProfit }, 'Take profit triggered');
+        console.log(`[TAKE-PROFIT] ${pos.asset.symbol}  price: $${price.toFixed(4)}  TP: $${pos.takeProfit.toFixed(4)}`);
         toClose.push(pos);
       }
     }

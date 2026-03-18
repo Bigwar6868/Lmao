@@ -99,6 +99,10 @@ export class SelfImprover {
       ? (newBest.fitness - previousBest.fitness) / previousBest.fitness
       : 0;
 
+    const improvementPct = previousBest.fitness > 0
+      ? `+${((newBest.fitness - previousBest.fitness) / previousBest.fitness * 100).toFixed(1)}%`
+      : 'n/a';
+
     if (improved) {
       await eventBus.emit('evolution:improvement', {
         strategy: name,
@@ -110,6 +114,13 @@ export class SelfImprover {
       log.info(
         { strategy: name, generation: newBest.generation, fitness: newBest.fitness.toFixed(4) },
         'Strategy improved!'
+      );
+      console.log(
+        `[EVOLVE] ${name}  gen ${newBest.generation}  fitness: ${newBest.fitness.toFixed(4)}  improvement: ${improvementPct}`
+      );
+    } else {
+      console.log(
+        `[EVOLVE] ${name}  gen ${newBest.generation}  fitness: ${newBest.fitness.toFixed(4)}  no improvement (prev: ${previousBest.fitness.toFixed(4)})`
       );
     }
 
