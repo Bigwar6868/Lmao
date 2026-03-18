@@ -6,6 +6,7 @@ import { eventBus } from '../../shared/events.js';
 import { createModuleLogger } from '../../shared/logger.js';
 import { CryptoDataFetcher } from './crypto.js';
 import { ForexDataFetcher } from './forex.js';
+import { OandaDataFetcher } from './oanda.js';
 
 const log = createModuleLogger('MarketAnalyst');
 
@@ -25,13 +26,16 @@ const TIMEFRAME_TO_AV_INTERVAL: Record<string, '5min' | '15min' | '60min'> = {
 export class MarketAnalyst {
   private crypto: CryptoDataFetcher;
   private forex: ForexDataFetcher;
+  private oanda: OandaDataFetcher | null;
   private cacheDir: string;
 
   constructor() {
     this.crypto = new CryptoDataFetcher();
-    this.forex = new ForexDataFetcher();
+    this.forex  = new ForexDataFetcher();
+    // Use OANDA for forex data when a token is configured
+    this.oanda  = config.oandaApiToken ? new OandaDataFetcher() : null;
     this.cacheDir = join(config.dataDir, 'historical');
-    log.info('MarketAnalyst initialised');
+    log.info({ oandaEnabled: !!this.oanda }, 'MarketAnalyst initialised');
   }
 
   // ----------------------------------------------------------------
@@ -113,6 +117,11 @@ export class MarketAnalyst {
     asset: AssetInfo,
     timeframe: Timeframe,
   ): Promise<Candle[]> {
+    // Prefer OANDA when configured — better rate limits and intraday coverage
+    if (this.oanda) {
+      return this.oanda.fetchCandles(asset.symbol, timeframe);
+    }
+
     const from = asset.baseCurrency ?? asset.symbol.split('/')[0]!;
     const to = asset.quoteCurrency ?? asset.symbol.split('/')[1]!;
     const avInterval = TIMEFRAME_TO_AV_INTERVAL[timeframe];

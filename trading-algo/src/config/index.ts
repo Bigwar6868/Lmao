@@ -29,6 +29,11 @@ export const config = {
   alpacaSecret: process.env.ALPACA_SECRET ?? '',
   alpacaPaper: process.env.ALPACA_PAPER !== 'false',
 
+  // OANDA v20
+  oandaApiToken:  process.env.OANDA_API_TOKEN  ?? '',
+  oandaAccountId: process.env.OANDA_ACCOUNT_ID ?? '',
+  oandaIsLive:    process.env.OANDA_IS_LIVE === 'true',
+
   // Trading
   tradingMode: (process.env.TRADING_MODE ?? 'paper') as 'paper' | 'live',
   defaultTimeframe: process.env.DEFAULT_TIMEFRAME ?? '1h',
