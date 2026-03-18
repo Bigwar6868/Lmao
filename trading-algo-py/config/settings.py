@@ -68,6 +68,10 @@ class Config:
     data_dir: str = field(default_factory=lambda: os.path.join(os.path.dirname(os.path.dirname(__file__)), "data"))
     cache_enabled: bool = True
 
+    # Telegram Bot
+    telegram_bot_token: str = field(default_factory=lambda: os.environ.get("TELEGRAM_BOT_TOKEN", ""))
+    telegram_chat_id: str = field(default_factory=lambda: os.environ.get("TELEGRAM_CHAT_ID", ""))
+
     # System
     log_level: str = field(default_factory=lambda: os.environ.get("LOG_LEVEL", "INFO"))
 
@@ -86,6 +90,10 @@ class Config:
     @property
     def has_oanda_credentials(self) -> bool:
         return bool(self.oanda_api_token and self.oanda_account_id)
+
+    @property
+    def has_telegram_credentials(self) -> bool:
+        return bool(self.telegram_bot_token)
 
 
 config = Config()
