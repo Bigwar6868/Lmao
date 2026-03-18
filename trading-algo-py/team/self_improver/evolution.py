@@ -77,6 +77,15 @@ PARAM_BOUNDS: dict[str, tuple[float, float]] = {
     "fvg_weight": (0.05, 0.5),
     "sweep_weight": (0.05, 0.5),
     "pd_weight": (0.05, 0.5),
+    # SMC v3 / ICT enhancements
+    "use_kill_zones": (0.0, 1.0),
+    "use_po3": (0.0, 1.0),
+    # Silver Bullet parameters
+    "require_window": (0.0, 1.0),
+    # ICT 2022 parameters
+    "require_all_phases": (0.0, 1.0),
+    "sweep_recency": (10, 30),
+    "mss_recency": (15, 40),
 }
 
 
