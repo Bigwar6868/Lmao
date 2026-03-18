@@ -145,13 +145,19 @@ export class OandaExecutor {
           comment: `algo:${signal.strategy}`,
           tag:     signal.strategy,
         },
-        ...(risk.stopLossPrice > 0 && {
+        ...(risk.stopLossPrice > 0 &&
+          (signal.action === 'BUY'
+            ? risk.stopLossPrice < signal.price
+            : risk.stopLossPrice > signal.price) && {
           stopLossOnFill: {
             price:       formatPrice(risk.stopLossPrice, instrument),
             timeInForce: 'GTC',
           },
         }),
-        ...(risk.takeProfitPrice > 0 && {
+        ...(risk.takeProfitPrice > 0 &&
+          (signal.action === 'BUY'
+            ? risk.takeProfitPrice > signal.price
+            : risk.takeProfitPrice < signal.price) && {
           takeProfitOnFill: {
             price:       formatPrice(risk.takeProfitPrice, instrument),
             timeInForce: 'GTC',
@@ -180,6 +186,8 @@ export class OandaExecutor {
           instrument,
           risk.stopLossPrice  > 0 ? risk.stopLossPrice  : undefined,
           risk.takeProfitPrice > 0 ? risk.takeProfitPrice : undefined,
+          signal.action,
+          filledPrice,
         );
       }
 
@@ -229,6 +237,8 @@ export class OandaExecutor {
     instrument: string,
     stopLoss?: number,
     takeProfit?: number,
+    side: 'BUY' | 'SELL' = 'BUY',
+    entryPrice = 0,
   ): Promise<void> {
     try {
       const data = await this.requestWithRetry<{ trade: Record<string, unknown> }>(
@@ -239,13 +249,18 @@ export class OandaExecutor {
 
       const body: Record<string, unknown> = {};
 
-      if (stopLoss !== undefined && !trade['stopLossOrder']) {
-        body['stopLoss'] = { price: formatPrice(stopLoss, instrument), timeInForce: 'GTC' };
-        log.warn({ tradeId, sl: formatPrice(stopLoss, instrument) }, 'SL missing — attaching');
+      const validSl = stopLoss !== undefined && stopLoss > 0 &&
+        (entryPrice === 0 || (side === 'BUY' ? stopLoss < entryPrice : stopLoss > entryPrice));
+      const validTp = takeProfit !== undefined && takeProfit > 0 &&
+        (entryPrice === 0 || (side === 'BUY' ? takeProfit > entryPrice : takeProfit < entryPrice));
+
+      if (validSl && !trade['stopLossOrder']) {
+        body['stopLoss'] = { price: formatPrice(stopLoss!, instrument), timeInForce: 'GTC' };
+        log.warn({ tradeId, sl: formatPrice(stopLoss!, instrument) }, 'SL missing — attaching');
       }
-      if (takeProfit !== undefined && !trade['takeProfitOrder']) {
-        body['takeProfit'] = { price: formatPrice(takeProfit, instrument), timeInForce: 'GTC' };
-        log.warn({ tradeId, tp: formatPrice(takeProfit, instrument) }, 'TP missing — attaching');
+      if (validTp && !trade['takeProfitOrder']) {
+        body['takeProfit'] = { price: formatPrice(takeProfit!, instrument), timeInForce: 'GTC' };
+        log.warn({ tradeId, tp: formatPrice(takeProfit!, instrument) }, 'TP missing — attaching');
       }
 
       if (Object.keys(body).length > 0) {
