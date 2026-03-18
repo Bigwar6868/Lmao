@@ -1,0 +1,36 @@
+[
+  {
+    "strategy": "momentum",
+    "before": {
+      "avg_return": 3.4166390377698552,
+      "avg_sharpe": 1.2769069821129884,
+      "avg_win_rate": 33.333333333333336,
+      "max_drawdown": 0.6287549521882284,
+      "total_trades": 4
+    },
+    "after": {
+      "avg_return": 13.585202401450935,
+      "avg_sharpe": 1.9569773429051676,
+      "avg_win_rate": 38.888888888888886,
+      "max_drawdown": 0.6917491460403471,
+      "total_trades": 12
+    },
+    "best_dna": {
+      "fast_ema": 13,
+      "slow_ema": 17,
+      "rsi_period": 14,
+      "rsi_overbought": 62,
+      "rsi_oversold": 29,
+      "adx_threshold": 12,
+      "trend_period": 36,
+      "min_confidence": 0.3
+    },
+    "fitness": 27.429942071797228,
+    "generations": 5,
+    "improved": true,
+    "sharpe_delta": 0.6800703607921792,
+    "return_delta": 10.16856336368108,
+    "win_rate_delta": 5.55555555555555,
+    "saved_to": "/home/user/Lmao/trading-algo-py/data/evolved/momentum.json"
+  }
+]

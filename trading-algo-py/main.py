@@ -126,18 +126,23 @@ class TradingOrchestrator:
 
         return results
 
-    def run_evolution(self, strategy_name: str, assets=None, generations: int = 5) -> None:
+    def run_evolution(self, strategy_name: str, assets=None, generations: int = 10) -> None:
         """Evolve a strategy's parameters using genetic algorithm."""
         from team.self_improver.evolution import SelfImprover
 
-        target_assets = assets or ALL_ASSETS[:5]
+        target_assets = assets or ALL_ASSETS[:8]
         improver = SelfImprover()
 
+        # Collect data for multi-asset evaluation
+        datasets = []
         for asset in target_assets:
             data = self.analyst.fetch_market_data(asset, config.default_timeframe)
-            best = improver.evolve(strategy_name, data, generations)
-            log.info("Best DNA for %s on %s: fitness=%.4f, params=%s",
-                     strategy_name, asset.symbol, best.fitness, best.params)
+            datasets.append(data)
+
+        best = improver.evolve(strategy_name, datasets, generations)
+        path = improver.save_best(strategy_name)
+        log.info("Best DNA for %s: fitness=%.4f, saved=%s, params=%s",
+                 strategy_name, best.fitness, path, best.params)
 
 
 def main():

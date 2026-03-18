@@ -1,0 +1,105 @@
+{
+  "strategy": "momentum",
+  "dna_id": "dc6b5548",
+  "generation": 3,
+  "fitness": 27.429942071797228,
+  "params": {
+    "fast_ema": 13,
+    "slow_ema": 17,
+    "rsi_period": 14,
+    "rsi_overbought": 62,
+    "rsi_oversold": 29,
+    "adx_threshold": 12,
+    "trend_period": 36,
+    "min_confidence": 0.3
+  },
+  "parent_id": "ec048af0",
+  "mutations": [
+    "crossover",
+    "mutate:rsi_oversold",
+    "mutate:trend_period"
+  ],
+  "evolved_at": 1773808561213,
+  "history": [
+    {
+      "generation": 1,
+      "best_fitness": 1.4020264500335102,
+      "avg_fitness": -0.6162282710099497,
+      "worst_fitness": -1.0,
+      "best_params": {
+        "fast_ema": 13,
+        "slow_ema": 17,
+        "rsi_period": 14,
+        "rsi_overbought": 62,
+        "rsi_oversold": 30,
+        "adx_threshold": 12,
+        "trend_period": 54,
+        "min_confidence": 0.3
+      }
+    },
+    {
+      "generation": 2,
+      "best_fitness": 8.241045624282489,
+      "avg_fitness": 0.935732550965669,
+      "worst_fitness": -1.0,
+      "best_params": {
+        "fast_ema": 13,
+        "slow_ema": 16,
+        "rsi_period": 15,
+        "rsi_overbought": 85,
+        "rsi_oversold": 22,
+        "adx_threshold": 12,
+        "trend_period": 50,
+        "min_confidence": 0.42691705935780366
+      }
+    },
+    {
+      "generation": 3,
+      "best_fitness": 8.241045624282489,
+      "avg_fitness": 1.9340206884735693,
+      "worst_fitness": -3.658525608977614,
+      "best_params": {
+        "fast_ema": 13,
+        "slow_ema": 16,
+        "rsi_period": 15,
+        "rsi_overbought": 85,
+        "rsi_oversold": 22,
+        "adx_threshold": 12,
+        "trend_period": 50,
+        "min_confidence": 0.42691705935780366
+      }
+    },
+    {
+      "generation": 4,
+      "best_fitness": 27.429942071797228,
+      "avg_fitness": 8.404056831100657,
+      "worst_fitness": -0.31404567187402144,
+      "best_params": {
+        "fast_ema": 13,
+        "slow_ema": 17,
+        "rsi_period": 14,
+        "rsi_overbought": 62,
+        "rsi_oversold": 29,
+        "adx_threshold": 12,
+        "trend_period": 36,
+        "min_confidence": 0.3
+      }
+    },
+    {
+      "generation": 5,
+      "best_fitness": 27.429942071797228,
+      "avg_fitness": 11.730563126394465,
+      "worst_fitness": -3.683440829984251,
+      "best_params": {
+        "fast_ema": 13,
+        "slow_ema": 17,
+        "rsi_period": 14,
+        "rsi_overbought": 62,
+        "rsi_oversold": 29,
+        "adx_threshold": 12,
+        "trend_period": 36,
+        "min_confidence": 0.3
+      }
+    }
+  ]
+}

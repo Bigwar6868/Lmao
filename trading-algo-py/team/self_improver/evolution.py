@@ -1,9 +1,26 @@
-"""Self-improver — genetic algorithm for strategy parameter evolution."""
+"""Self-improver — genetic algorithm for strategy parameter evolution.
+
+Evolves strategy DNA parameters using:
+1. Multi-objective fitness (Sharpe × return × win_rate - drawdown penalty)
+2. Tournament selection + uniform crossover + Gaussian mutation
+3. Parameter bounds to prevent degenerate configs
+4. Multi-asset evaluation for robustness
+5. Persistent DNA storage (saves best to data/evolved/)
+
+AI Auto-Evolution Prompt (used by scripts/evolve.py):
+  The system runs evolution autonomously:
+  - Backtests each DNA variant across multiple assets
+  - Selects winners by risk-adjusted return (Sharpe is king)
+  - Breeds top performers, mutates parameters within safe bounds
+  - Saves best DNA to disk and applies it to live strategies
+"""
 
 from __future__ import annotations
 
 import copy
+import json
 import logging
+import os
 import random
 import time
 import uuid
@@ -14,6 +31,63 @@ from team.backtester.engine import Backtester
 from config.settings import config
 
 log = logging.getLogger(__name__)
+
+# Parameter bounds — prevent degenerate values from mutation
+PARAM_BOUNDS: dict[str, tuple[float, float]] = {
+    # Periods (must be >= 2, reasonable upper limit)
+    "fast_ema": (3, 50),
+    "slow_ema": (10, 100),
+    "ema_fast": (3, 50),
+    "ema_slow": (10, 100),
+    "rsi_period": (5, 30),
+    "bb_period": (10, 50),
+    "lookback": (10, 50),
+    "atr_period": (5, 30),
+    "macd_fast": (5, 20),
+    "macd_slow": (15, 50),
+    "macd_signal": (3, 15),
+    "stoch_k": (5, 30),
+    "stoch_d": (2, 10),
+    "trend_period": (20, 100),
+    # RSI thresholds
+    "rsi_overbought": (60, 85),
+    "rsi_oversold": (15, 40),
+    # Multipliers / ratios
+    "bb_std": (1.0, 3.5),
+    "atr_multiplier": (0.8, 3.0),
+    "atr_expansion": (1.0, 2.0),
+    "volume_threshold": (1.0, 3.0),
+    "min_bb_width_pct": (0.2, 2.0),
+    # Weights (must sum to ~1.0, handled separately)
+    "w_ema": (0.05, 0.5),
+    "w_rsi": (0.05, 0.5),
+    "w_macd": (0.05, 0.5),
+    "w_stoch": (0.05, 0.5),
+    # Thresholds
+    "threshold": (0.15, 0.6),
+    "min_confidence": (0.3, 0.8),
+    "adx_threshold": (10, 35),
+}
+
+
+def _clamp_param(key: str, val: float) -> float:
+    """Clamp a parameter to its allowed bounds."""
+    bounds = PARAM_BOUNDS.get(key)
+    if bounds:
+        return max(bounds[0], min(bounds[1], val))
+    return val
+
+
+def _normalise_weights(params: dict) -> dict:
+    """Ensure w_ema + w_rsi + w_macd + w_stoch = 1.0."""
+    weight_keys = [k for k in params if k.startswith("w_")]
+    if not weight_keys:
+        return params
+    total = sum(params[k] for k in weight_keys)
+    if total > 0:
+        for k in weight_keys:
+            params[k] = params[k] / total
+    return params
 
 
 class SelfImprover:
@@ -31,15 +105,21 @@ class SelfImprover:
         self.backtester = Backtester()
         self.generation = 0
         self.best_dna: dict[str, StrategyDNA] = {}
+        self.history: list[dict] = []  # Track fitness over generations
 
         log.info("SelfImprover initialised (pop=%d, mut=%.2f)", self.pop_size, self.mutation_rate)
 
-    def evolve(self, strategy_name: str, market_data: MarketData, generations: int = 5) -> StrategyDNA:
+    def evolve(
+        self,
+        strategy_name: str,
+        market_data: MarketData | list[MarketData],
+        generations: int = 5,
+    ) -> StrategyDNA:
         """Evolve a strategy's parameters over multiple generations.
 
         Args:
             strategy_name: Name of strategy to evolve
-            market_data: Historical data to backtest against
+            market_data: Single MarketData or list for multi-asset evaluation
             generations: Number of generations to run
 
         Returns:
@@ -47,6 +127,9 @@ class SelfImprover:
         """
         if strategy_name not in ALL_STRATEGIES:
             raise ValueError(f"Unknown strategy: {strategy_name}")
+
+        # Support both single and multi-asset
+        datasets = market_data if isinstance(market_data, list) else [market_data]
 
         # Initialise population
         population = self._init_population(strategy_name)
@@ -56,14 +139,25 @@ class SelfImprover:
         for gen in range(generations):
             self.generation += 1
 
-            # Evaluate fitness
+            # Evaluate fitness across ALL datasets (multi-asset robustness)
             results: list[tuple[StrategyDNA, float]] = []
             for dna in population:
                 strategy = create_strategy(strategy_name, dna)
-                result = self.backtester.run(strategy, market_data)
-                fitness = self._calc_fitness(result)
-                dna.fitness = fitness
-                results.append((dna, fitness))
+                fitness_scores = []
+                for data in datasets:
+                    result = self.backtester.run(strategy, data)
+                    fitness_scores.append(self._calc_fitness(result))
+
+                # Average fitness across assets — rewards consistency
+                avg_fitness = sum(fitness_scores) / len(fitness_scores)
+                # Penalise high variance (inconsistent across assets)
+                if len(fitness_scores) > 1:
+                    mean = avg_fitness
+                    variance = sum((f - mean) ** 2 for f in fitness_scores) / len(fitness_scores)
+                    avg_fitness -= variance * 0.05  # Small penalty for inconsistency
+
+                dna.fitness = avg_fitness
+                results.append((dna, avg_fitness))
 
             # Sort by fitness
             results.sort(key=lambda x: x[1], reverse=True)
@@ -72,10 +166,19 @@ class SelfImprover:
                 best_fitness = results[0][1]
                 best_overall = copy.deepcopy(results[0][0])
 
+            gen_info = {
+                "generation": gen + 1,
+                "best_fitness": results[0][1],
+                "avg_fitness": sum(f for _, f in results) / len(results),
+                "worst_fitness": results[-1][1],
+                "best_params": dict(results[0][0].params),
+            }
+            self.history.append(gen_info)
+
             log.info(
-                "Gen %d/%d: best=%.4f, avg=%.4f",
-                gen + 1, generations, results[0][1],
-                sum(f for _, f in results) / len(results),
+                "Gen %d/%d: best=%.2f, avg=%.2f, worst=%.2f",
+                gen + 1, generations, gen_info["best_fitness"],
+                gen_info["avg_fitness"], gen_info["worst_fitness"],
             )
 
             # Selection + crossover + mutation
@@ -98,34 +201,37 @@ class SelfImprover:
         return best_overall or population[0]
 
     def _init_population(self, strategy_name: str) -> list[StrategyDNA]:
-        """Create initial population with randomised parameters."""
+        """Create initial population with randomised parameters within bounds."""
         base = create_strategy(strategy_name).get_default_dna()
         population = [copy.deepcopy(base)]
 
         for _ in range(self.pop_size - 1):
             dna = copy.deepcopy(base)
             dna.id = str(uuid.uuid4())[:8]
-            # Randomise each param within +-50%
+            # Randomise each param within bounds
             for key, val in dna.params.items():
                 if isinstance(val, (int, float)):
                     factor = random.uniform(0.5, 1.5)
-                    dna.params[key] = type(val)(val * factor)
+                    new_val = val * factor
+                    new_val = _clamp_param(key, new_val)
+                    dna.params[key] = type(val)(new_val)
+            dna.params = _normalise_weights(dna.params)
             population.append(dna)
 
         return population
 
     def _calc_fitness(self, result: BacktestResult) -> float:
-        """Multi-objective fitness: return * sharpe * win_rate, penalise drawdown."""
+        """Multi-objective fitness: prioritise Sharpe, then return, then win rate."""
         m = result.metrics
         if m.total_trades < 3:
             return -1.0
 
         fitness = (
-            m.total_return_pct * 0.3 +
-            m.sharpe_ratio * 20 * 0.3 +
-            m.win_rate * 100 * 0.2 +
-            m.profit_factor * 10 * 0.1 -
-            m.max_drawdown_pct * 0.1
+            m.sharpe_ratio * 25 * 0.35 +      # 35% Sharpe (risk-adjusted is king)
+            m.total_return_pct * 0.25 +         # 25% raw return
+            m.win_rate * 100 * 0.2 +            # 20% win rate
+            m.profit_factor * 10 * 0.1 -        # 10% profitability ratio
+            m.max_drawdown_pct * 0.15           # 15% drawdown penalty (increased)
         )
         return fitness
 
@@ -147,18 +253,78 @@ class SelfImprover:
             if key in p2.params and random.random() < 0.5:
                 child.params[key] = p2.params[key]
 
+        child.params = _normalise_weights(child.params)
         child.mutations = ["crossover"]
         return child
 
     def _mutate(self, dna: StrategyDNA) -> StrategyDNA:
-        """Apply random mutations to parameters."""
+        """Apply random mutations to parameters, clamped to bounds."""
         for key, val in dna.params.items():
             if random.random() < self.mutation_rate:
                 if isinstance(val, (int, float)):
                     factor = random.gauss(1.0, 0.2)
-                    new_val = type(val)(val * factor)
+                    new_val = val * factor
+                    new_val = _clamp_param(key, new_val)
                     if isinstance(val, int):
                         new_val = max(1, int(new_val))
-                    dna.params[key] = new_val
+                    dna.params[key] = type(val)(new_val) if isinstance(val, int) else new_val
                     dna.mutations.append(f"mutate:{key}")
+        dna.params = _normalise_weights(dna.params)
         return dna
+
+    # ── Persistence ──────────────────────────────────────────
+
+    def save_best(self, strategy_name: str, tag: str = "") -> str | None:
+        """Save the best DNA for a strategy to disk."""
+        dna = self.best_dna.get(strategy_name)
+        if not dna:
+            log.warning("No best DNA for %s to save", strategy_name)
+            return None
+
+        evolved_dir = os.path.join(config.data_dir, "evolved")
+        os.makedirs(evolved_dir, exist_ok=True)
+
+        filename = f"{strategy_name}{'_' + tag if tag else ''}.json"
+        path = os.path.join(evolved_dir, filename)
+
+        payload = {
+            "strategy": strategy_name,
+            "dna_id": dna.id,
+            "generation": dna.generation,
+            "fitness": dna.fitness,
+            "params": dna.params,
+            "parent_id": dna.parent_id,
+            "mutations": dna.mutations,
+            "evolved_at": int(time.time() * 1000),
+            "history": self.history,
+        }
+
+        with open(path, "w") as f:
+            json.dump(payload, f, indent=2)
+
+        log.info("Saved evolved DNA to %s (fitness=%.4f)", path, dna.fitness)
+        return path
+
+    @staticmethod
+    def load_dna(strategy_name: str, tag: str = "") -> StrategyDNA | None:
+        """Load a previously evolved DNA from disk."""
+        evolved_dir = os.path.join(config.data_dir, "evolved")
+        filename = f"{strategy_name}{'_' + tag if tag else ''}.json"
+        path = os.path.join(evolved_dir, filename)
+
+        if not os.path.exists(path):
+            return None
+
+        with open(path) as f:
+            payload = json.load(f)
+
+        return StrategyDNA(
+            id=payload["dna_id"],
+            name=strategy_name,
+            generation=payload.get("generation", 0),
+            parent_id=payload.get("parent_id"),
+            params=payload["params"],
+            fitness=payload.get("fitness", 0),
+            created_at=payload.get("evolved_at", 0),
+            mutations=payload.get("mutations", []),
+        )
