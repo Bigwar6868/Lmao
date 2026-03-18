@@ -94,6 +94,16 @@ export class StrategyEvolver {
       mutated.mutations.push(`${key}: ${oldValue} → ${newValue}`);
     }
 
+    log.info(
+      {
+        id: mutated.id.slice(0, 8),
+        parentId: mutated.parentId?.slice(0, 8),
+        strategy: mutated.name,
+        changes: keysToMutate.map(k => `${k}: ${dna.params[k]} → ${mutated.params[k]}`),
+      },
+      `Mutation applied (${keysToMutate.length} param${keysToMutate.length > 1 ? 's' : ''})`
+    );
+
     return mutated;
   }
 

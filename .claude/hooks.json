@@ -1,5 +1,18 @@
 {
   "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=$(jq -r '.tool_input.file_path // \"\"'); echo \"$f\" | grep -q 'trading-algo/src/' && cd /home/user/Lmao/trading-algo && npm test 2>&1 | tail -20 || true",
+            "timeout": 60,
+            "statusMessage": "Running tests..."
+          }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "matcher": "",
