@@ -1,4 +1,5 @@
 import type { AssetInfo } from '../shared/types.js';
+import { OandaDataFetcher } from '../team/market-analyst/oanda.js';
 
 // ============================================================
 // Helper factories
@@ -65,4 +66,24 @@ export const assetBySymbol = new Map<string, AssetInfo>(
 export function addAsset(asset: AssetInfo): void {
   allAssets.push(asset);
   assetBySymbol.set(asset.symbol, asset);
+}
+
+/**
+ * Fetch all tradeable instruments from OANDA and merge into allAssets.
+ * Safe to call multiple times — deduplicates by symbol.
+ * Returns the number of newly added assets (0 if OANDA is unavailable).
+ */
+export async function loadOandaAssets(): Promise<number> {
+  const fetcher = new OandaDataFetcher();
+  const instruments = await fetcher.getInstruments();
+  if (instruments.length === 0) return 0;
+
+  let added = 0;
+  for (const asset of instruments) {
+    if (!assetBySymbol.has(asset.symbol)) {
+      addAsset(asset);
+      added++;
+    }
+  }
+  return added;
 }

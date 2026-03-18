@@ -1,5 +1,5 @@
 import { config } from './config/index.js';
-import { allAssets } from './config/assets.js';
+import { allAssets, loadOandaAssets } from './config/assets.js';
 import { AgentNetwork } from './team/agent-network/network.js';
 import { TradingAgent } from './team/agent-network/trading-agent.js';
 import { AgentSpawner } from './team/agent-network/spawner.js';
@@ -123,7 +123,13 @@ export class TradingSystem {
       },
     );
 
-    // 7. CEO sets available asset universe — Trading Team decides what to actually trade
+    // 7. Load OANDA instruments dynamically (all forex, metals, indices, commodities)
+    if (config.oandaApiToken) {
+      const added = await loadOandaAssets();
+      if (added > 0) log.info({ added, total: allAssets.length }, 'OANDA instruments added to asset universe');
+    }
+
+    // 7b. CEO sets available asset universe — Trading Team decides what to actually trade
     this.ceo.setActiveAssets(allAssets);
     this.ceo.setActiveStrategies(strategyList.map(s => s.name));
 

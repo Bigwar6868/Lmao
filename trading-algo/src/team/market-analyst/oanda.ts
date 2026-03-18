@@ -1,5 +1,5 @@
 import axios, { type AxiosInstance } from 'axios';
-import type { Candle } from '../../shared/types.js';
+import type { AssetClass, AssetInfo, Candle } from '../../shared/types.js';
 import { config } from '../../config/index.js';
 import { createModuleLogger } from '../../shared/logger.js';
 import { generateSyntheticCandles } from '../../shared/synthetic.js';
@@ -23,6 +23,13 @@ const TIMEFRAME_TO_GRANULARITY: Record<string, string> = {
   '4h':  'H4',
   '1d':  'D',
   '1w':  'W',
+};
+
+/** Map OANDA instrument type string → our AssetClass */
+const OANDA_TYPE_TO_ASSET_CLASS: Record<string, AssetClass> = {
+  CURRENCY: 'forex',
+  METAL:    'commodity',
+  CFD:      'index',
 };
 
 /** 100 req/s on persistent Keep-Alive connections (OANDA best practices) */
@@ -122,6 +129,41 @@ export class OandaDataFetcher {
   /** EUR_USD → EUR/USD */
   private fromInstrument(instrument: string): string {
     return instrument.replace('_', '/');
+  }
+
+  // ----------------------------------------------------------------
+  // Instrument discovery
+  // ----------------------------------------------------------------
+
+  /**
+   * Fetch all tradeable instruments from OANDA for this account.
+   * Returns an empty array in cloud mode or when no token is configured
+   * so callers can fall back to the static asset list gracefully.
+   */
+  async getInstruments(): Promise<AssetInfo[]> {
+    if (config.cloudMode || !config.oandaApiToken) return [];
+
+    await this.throttle();
+    try {
+      const { data } = await this.client.get<{
+        instruments: Array<{ name: string; type: string; displayName: string }>;
+      }>(`/v3/accounts/${this.accountId}/instruments`);
+
+      const assets: AssetInfo[] = [];
+      for (const inst of data.instruments ?? []) {
+        const assetClass: AssetClass = OANDA_TYPE_TO_ASSET_CLASS[inst.type] ?? 'forex';
+        // OANDA uses underscore notation: EUR_USD → EUR/USD
+        const symbol = inst.name.replace('_', '/');
+        const [base, quote] = symbol.split('/');
+        assets.push({ symbol, assetClass, baseCurrency: base, quoteCurrency: quote });
+      }
+
+      log.info({ count: assets.length }, 'OANDA instruments loaded');
+      return assets;
+    } catch (err) {
+      log.warn({ error: (err as Error).message }, 'OANDA instrument discovery failed — using static list');
+      return [];
+    }
   }
 
   // ----------------------------------------------------------------
