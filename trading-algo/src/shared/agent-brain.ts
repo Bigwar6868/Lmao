@@ -90,6 +90,61 @@ Monitor system health: memory usage, data source availability, API rate limits, 
 Flag any operational issues immediately.`,
 };
 
+// ============================================================
+// LLM Provider — supports Claude Agent SDK or Ollama (local LLMs)
+// ============================================================
+
+export interface LLMProvider {
+  name: string;
+  model: string;
+  query(systemPrompt: string, userPrompt: string): Promise<string>;
+}
+
+/** Ollama LLM provider — connects to local Ollama instance */
+export class OllamaProvider implements LLMProvider {
+  readonly name = 'ollama';
+  readonly model: string;
+  private endpoint: string;
+
+  constructor(
+    endpoint = process.env.OLLAMA_CEO_ENDPOINT ?? process.env.OLLAMA_ENDPOINT ?? 'http://localhost:11434',
+    model = process.env.OLLAMA_CEO_MODEL ?? process.env.OLLAMA_MODEL ?? 'MiniMax-M1-80k',
+  ) {
+    this.endpoint = endpoint.replace(/\/$/, '');
+    this.model = model;
+    log.info({ endpoint: this.endpoint, model: this.model }, 'OllamaProvider configured');
+  }
+
+  async query(systemPrompt: string, userPrompt: string): Promise<string> {
+    const url = `${this.endpoint}/api/chat`;
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: this.model,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+        stream: false,
+        options: {
+          temperature: 0.3, // Low temperature for consistent CEO decisions
+          num_predict: 1024,
+        },
+      }),
+      signal: AbortSignal.timeout(60_000), // 60s for local LLM inference
+    });
+
+    if (!response.ok) {
+      throw new Error(`Ollama returned ${response.status}: ${await response.text()}`);
+    }
+
+    const result = await response.json() as { message?: { content?: string } };
+    return result.message?.content ?? '';
+  }
+}
+
 // Lazy-loaded query function from Claude Agent SDK
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let queryFn: ((...args: any[]) => AsyncIterable<any>) | null = null;
@@ -110,6 +165,18 @@ async function getQueryFn() {
   }
 }
 
+/** Global LLM provider override — set this to use Ollama instead of Claude SDK */
+let globalLlmProvider: LLMProvider | null = null;
+
+export function setGlobalLLMProvider(provider: LLMProvider): void {
+  globalLlmProvider = provider;
+  log.info({ provider: provider.name, model: provider.model }, 'Global LLM provider set');
+}
+
+export function getGlobalLLMProvider(): LLMProvider | null {
+  return globalLlmProvider;
+}
+
 /**
  * AgentBrain — AI-powered reasoning engine using Claude Agent SDK.
  *
@@ -126,11 +193,25 @@ export class AgentBrain {
   private aiAvailable = true;
   private aiFailCount = 0;
   private readonly maxAiRetries = 3;
+  private llmProvider: LLMProvider | null;
 
-  constructor(agentId: AgentId, role: BrainRole, name: string) {
+  constructor(agentId: AgentId, role: BrainRole, name: string, llmProvider?: LLMProvider) {
     this.agentId = agentId;
     this.role = role;
     this.name = name;
+    this.llmProvider = llmProvider ?? null;
+  }
+
+  /** Set or swap the LLM provider at runtime */
+  setLLMProvider(provider: LLMProvider): void {
+    this.llmProvider = provider;
+    this.aiAvailable = true;
+    this.aiFailCount = 0;
+    log.info({ agent: this.name, provider: provider.name, model: provider.model }, 'LLM provider set');
+  }
+
+  getLLMProvider(): LLMProvider | null {
+    return this.llmProvider ?? globalLlmProvider;
   }
 
   /**
@@ -139,8 +220,25 @@ export class AgentBrain {
   async thinkAsync(question: string, context: BrainContext): Promise<ThoughtChain> {
     const start = Date.now();
 
-    // Try Claude Code sub-agent first
-    if (this.aiAvailable) {
+    // Priority 1: Dedicated LLM provider (e.g. Ollama with MiniMax M2.7)
+    const provider = this.getLLMProvider();
+    if (provider && this.aiAvailable) {
+      try {
+        const chain = await this.thinkWithLLMProvider(provider, question, context, start);
+        this.aiFailCount = 0;
+        return this.recordChain(chain);
+      } catch (err) {
+        this.aiFailCount++;
+        log.warn({ agent: this.name, provider: provider.name, error: (err as Error).message, failCount: this.aiFailCount }, 'LLM provider thinking failed');
+        if (this.aiFailCount >= this.maxAiRetries) {
+          this.aiAvailable = false;
+          log.warn({ agent: this.name, provider: provider.name }, 'Too many failures — disabling LLM provider, using rule-based only');
+        }
+      }
+    }
+
+    // Priority 2: Claude Code sub-agent
+    if (this.aiAvailable && !provider) {
       try {
         const chain = await this.thinkWithClaudeCode(question, context, start);
         this.aiFailCount = 0;
@@ -155,7 +253,7 @@ export class AgentBrain {
       }
     }
 
-    // Fallback to rule-based
+    // Fallback: rule-based
     return this.recordChain(this.thinkRuleBased(question, context, start));
   }
 
@@ -206,6 +304,34 @@ export class AgentBrain {
 
   getLastThought(): ThoughtChain | undefined {
     return this.thoughtHistory[this.thoughtHistory.length - 1];
+  }
+
+  // ================================================================
+  // Ollama / External LLM Provider Thinking
+  // ================================================================
+
+  private async thinkWithLLMProvider(provider: LLMProvider, question: string, ctx: BrainContext, start: number): Promise<ThoughtChain> {
+    const systemPrompt = ROLE_SYSTEM_PROMPTS[this.role];
+    const userPrompt = this.buildPrompt(question, ctx);
+
+    log.info({ agent: this.name, provider: provider.name, model: provider.model, question }, 'Thinking with LLM provider...');
+
+    const result = await provider.query(systemPrompt, userPrompt);
+
+    const chain = this.parseResponse(question, result, start);
+    // Mark that we used AI (external LLM, not Claude SDK)
+    chain.usedAI = true;
+    (chain as ThoughtChain & { llmProvider?: string }).llmProvider = `${provider.name}/${provider.model}`;
+
+    log.info({
+      agent: this.name,
+      provider: `${provider.name}/${provider.model}`,
+      decision: chain.decision.slice(0, 100),
+      confidence: chain.confidence,
+      durationMs: chain.durationMs,
+    }, 'LLM thinking complete');
+
+    return chain;
   }
 
   // ================================================================

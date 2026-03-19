@@ -76,4 +76,12 @@ export const config = {
   agentLoopTickMs: Number(process.env.AGENT_LOOP_TICK_MS ?? 2_000),         // loop tick interval
   agentIdleCooldownMs: Number(process.env.AGENT_IDLE_COOLDOWN_MS ?? 30_000), // min between idle explorations
   agentExploreProbability: Number(process.env.AGENT_EXPLORE_PROB ?? 0.2),    // chance of exploring when idle
+
+  // Ollama / Local LLM (CEO brain + messaging analysis)
+  ollamaCeoEndpoint: process.env.OLLAMA_CEO_ENDPOINT ?? process.env.OLLAMA_ENDPOINT ?? '',
+  ollamaCeoModel: process.env.OLLAMA_CEO_MODEL ?? process.env.OLLAMA_MODEL ?? 'MiniMax-M1-80k',
+  ollamaEndpoint: process.env.OLLAMA_ENDPOINT ?? '',
+  ollamaModel: process.env.OLLAMA_MODEL ?? 'llama3',
+  ollamaTemperature: Number(process.env.OLLAMA_TEMPERATURE ?? 0.3),
+  ollamaTimeoutMs: Number(process.env.OLLAMA_TIMEOUT_MS ?? 60_000),
 } as const;

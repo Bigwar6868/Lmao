@@ -15,9 +15,10 @@ import type {
   AgentMessage,
   DiscussionThread,
 } from '../../shared/agent-types.js';
-import type { AssetInfo, Portfolio } from '../../shared/types.js';
+import type { AssetInfo, Portfolio, MacroEnvironment } from '../../shared/types.js';
 import { generateId } from '../../shared/utils.js';
 import { createModuleLogger } from '../../shared/logger.js';
+import { AgentBrain, OllamaProvider, type LLMProvider, type BrainContext, type ThoughtChain } from '../../shared/agent-brain.js';
 import type { AgentNetwork } from '../agent-network/network.js';
 
 const log = createModuleLogger('ceo');
@@ -35,10 +36,23 @@ export class CEOAgent {
   private cycleCount = 0;
   private paused = false;
 
-  constructor(network: AgentNetwork) {
+  /** CEO's AI brain — powered by Ollama (MiniMax M2.7) or Claude SDK */
+  readonly brain: AgentBrain;
+  private lastPortfolio?: Portfolio;
+  private lastMacro?: MacroEnvironment;
+
+  constructor(network: AgentNetwork, llmProvider?: LLMProvider) {
     this.id = generateId();
     this.network = network;
     this.network.register(this.id);
+
+    // Initialize CEO brain — defaults to Ollama if OLLAMA_CEO_ENDPOINT is set
+    const provider = llmProvider ?? (
+      process.env.OLLAMA_CEO_ENDPOINT || process.env.OLLAMA_ENDPOINT
+        ? new OllamaProvider()
+        : undefined
+    );
+    this.brain = new AgentBrain(this.id, 'ceo', 'CEO Agent', provider);
 
     // CEO listens to all messages
     this.network.on(this.id, 'request', (msg) => this.handleRequest(msg));
@@ -46,7 +60,49 @@ export class CEOAgent {
     this.network.on(this.id, 'alert', (msg) => this.handleAlert(msg));
     this.network.on(this.id, 'discuss', (msg) => this.handleDiscussion(msg));
 
-    log.info({ id: this.id }, 'CEO Agent initialized');
+    log.info({
+      id: this.id,
+      brain: provider ? `${provider.name}/${provider.model}` : 'rule-based (no LLM)',
+    }, 'CEO Agent initialized');
+  }
+
+  /** Update the context the CEO brain uses for decisions */
+  updateContext(portfolio?: Portfolio, macro?: MacroEnvironment): void {
+    if (portfolio) this.lastPortfolio = portfolio;
+    if (macro) this.lastMacro = macro;
+  }
+
+  /** Build rich context for the CEO brain */
+  private getBrainContext(extra?: Record<string, unknown>): BrainContext {
+    return {
+      mission: 'Oversee all 5 teams. Maximize risk-adjusted returns while preserving capital.',
+      portfolio: this.lastPortfolio ? {
+        capital: this.lastPortfolio.capital,
+        totalPnl: this.lastPortfolio.totalPnl,
+        openPositions: this.lastPortfolio.positions.filter(p => p.status === 'open').length,
+        winRate: this.lastPortfolio.positions.length > 0
+          ? this.lastPortfolio.positions.filter(p => p.realizedPnl > 0).length / Math.max(1, this.lastPortfolio.positions.filter(p => p.status === 'closed').length)
+          : 0,
+      } : undefined,
+      macro: this.lastMacro,
+      customData: {
+        cycleCount: this.cycleCount,
+        paused: this.paused,
+        totalAgents: [...this.teams.values()].reduce((sum, t) => sum + t.memberIds.length, 0),
+        teamCount: this.teams.size,
+        pendingRequests: this.pendingRequests.length,
+        activeStrategies: this.activeStrategies,
+        ...extra,
+      },
+    };
+  }
+
+  /**
+   * Ask the CEO brain to think about a strategic question.
+   * Uses MiniMax M2.7 via Ollama if configured, otherwise rule-based.
+   */
+  async think(question: string, extra?: Record<string, unknown>): Promise<ThoughtChain> {
+    return this.brain.thinkAsync(question, this.getBrainContext(extra));
   }
 
   // ----------------------------------------------------------------
@@ -194,9 +250,16 @@ export class CEOAgent {
   private async autoDecide(request: { id: string; from: AgentId; payload: RequestPayload }): Promise<void> {
     const { payload } = request;
 
+    // If we have an LLM brain, use it for all decisions
+    const hasLLM = this.brain.getLLMProvider() !== null;
+    if (hasLLM) {
+      await this.llmDecide(request);
+      return;
+    }
+
+    // Fallback: hardcoded rules when no LLM available
     switch (payload.requestType) {
       case 'spawn-agent': {
-        // Approve if total agents < 30
         const totalAgents = [...this.teams.values()].reduce((sum, t) => sum + t.memberIds.length, 0);
         if (totalAgents < 30) {
           await this.approve(request.id, request.from, 'Agent count within limits');
@@ -206,14 +269,12 @@ export class CEOAgent {
         break;
       }
       case 'new-asset': {
-        // Approve new assets — more data is good
         await this.approve(request.id, request.from, 'Adding asset to active list');
         const asset = payload.data.asset as AssetInfo | undefined;
         if (asset) this.activeAssets.push(asset);
         break;
       }
       case 'evolution': {
-        // Always approve evolution requests
         await this.approve(request.id, request.from, 'Evolution approved');
         await this.issueDirective('evolve', 'evolution', payload.data, payload.reason);
         break;
@@ -224,8 +285,84 @@ export class CEOAgent {
         break;
       }
       default: {
-        // Queue for manual review (logged, not auto-decided)
         log.info({ requestType: payload.requestType }, 'Request queued for review');
+      }
+    }
+  }
+
+  /**
+   * LLM-powered decision making — the CEO brain (MiniMax M2.7 via Ollama)
+   * analyzes the request with full system context and decides.
+   */
+  private async llmDecide(request: { id: string; from: AgentId; payload: RequestPayload }): Promise<void> {
+    const { payload } = request;
+    const totalAgents = [...this.teams.values()].reduce((sum, t) => sum + t.memberIds.length, 0);
+
+    try {
+      const chain = await this.brain.thinkAsync(
+        `A team member requests: "${payload.requestType}" — "${payload.description}". Reason: "${payload.reason}". Should I APPROVE or VETO?`,
+        this.getBrainContext({
+          requestType: payload.requestType,
+          requestData: payload.data,
+          requestReason: payload.reason,
+          totalAgents,
+          maxAgents: 30,
+        }),
+      );
+
+      const decision = chain.decision.toUpperCase();
+      const isApprove = decision.includes('APPROVE') || decision.includes('YES') || decision.includes('ACCEPT');
+      const isVeto = decision.includes('VETO') || decision.includes('DENY') || decision.includes('REJECT') || decision.includes('NO');
+
+      log.info({
+        requestType: payload.requestType,
+        llmDecision: chain.decision,
+        confidence: chain.confidence,
+        reasoning: chain.reasoning.slice(0, 200),
+        provider: (chain as ThoughtChain & { llmProvider?: string }).llmProvider,
+      }, 'CEO brain decision');
+
+      if (isApprove && !isVeto) {
+        await this.approve(request.id, request.from, `[LLM] ${chain.reasoning.slice(0, 150)}`);
+
+        // Execute side effects based on request type
+        if (payload.requestType === 'new-asset') {
+          const asset = payload.data.asset as AssetInfo | undefined;
+          if (asset) this.activeAssets.push(asset);
+        } else if (payload.requestType === 'evolution') {
+          await this.issueDirective('evolve', 'evolution', payload.data, payload.reason);
+        } else if (payload.requestType === 'decrease-risk') {
+          await this.issueDirective('adjust-risk', 'risk', { action: 'decrease', ...payload.data }, payload.reason, 'urgent');
+        }
+      } else if (isVeto) {
+        await this.vetoRequest(request.id, request.from, `[LLM] ${chain.reasoning.slice(0, 150)}`);
+      } else {
+        // Ambiguous response — fall back to safe defaults
+        log.warn({ decision: chain.decision }, 'CEO brain gave ambiguous response — using safe default');
+        if (payload.requestType === 'decrease-risk') {
+          await this.approve(request.id, request.from, 'Risk reduction auto-approved (safety default)');
+          await this.issueDirective('adjust-risk', 'risk', { action: 'decrease', ...payload.data }, payload.reason, 'urgent');
+        } else {
+          log.info({ requestType: payload.requestType }, 'Request queued for review (ambiguous LLM response)');
+        }
+      }
+    } catch (err) {
+      log.error({ error: (err as Error).message, requestType: payload.requestType }, 'CEO brain failed — falling back to rules');
+      // Re-run with hardcoded logic by temporarily nullifying the check
+      const provider = this.brain.getLLMProvider();
+      if (provider) {
+        // Temporarily bypass LLM for this request by using hardcoded path
+        switch (payload.requestType) {
+          case 'decrease-risk':
+            await this.approve(request.id, request.from, 'Risk reduction approved (LLM fallback)');
+            await this.issueDirective('adjust-risk', 'risk', { action: 'decrease', ...payload.data }, payload.reason, 'urgent');
+            break;
+          case 'evolution':
+            await this.approve(request.id, request.from, 'Evolution approved (LLM fallback)');
+            break;
+          default:
+            log.info({ requestType: payload.requestType }, 'Request queued (LLM unavailable)');
+        }
       }
     }
   }
@@ -262,9 +399,30 @@ export class CEOAgent {
       summary: payload.summary,
     }, 'CEO received report');
 
-    // React to critical reports
+    // React to critical reports — use brain if available
     if (payload.reportType === 'risk-alert') {
-      void this.issueDirective('pause-trading', 'trading', payload.data, `Risk alert: ${payload.summary}`, 'urgent');
+      const hasLLM = this.brain.getLLMProvider() !== null;
+      if (hasLLM) {
+        // Let the brain decide how to respond to risk alerts
+        void this.brain.thinkAsync(
+          `URGENT: Risk alert received: "${payload.summary}". Data: ${JSON.stringify(payload.data)}. Should I pause trading, reduce exposure, or monitor?`,
+          this.getBrainContext({ riskAlert: payload }),
+        ).then(chain => {
+          const decision = chain.decision.toUpperCase();
+          if (decision.includes('PAUSE') || decision.includes('STOP') || decision.includes('HALT')) {
+            void this.issueDirective('pause-trading', 'trading', payload.data, `[LLM] ${chain.reasoning.slice(0, 150)}`, 'urgent');
+          } else if (decision.includes('REDUCE') || decision.includes('DECREASE')) {
+            void this.issueDirective('adjust-risk', 'risk', { action: 'decrease', ...payload.data }, `[LLM] ${chain.reasoning.slice(0, 150)}`, 'urgent');
+          } else {
+            log.info({ decision: chain.decision }, 'CEO brain advises monitoring risk (no action)');
+          }
+        }).catch(() => {
+          // Fallback: always pause on risk alert
+          void this.issueDirective('pause-trading', 'trading', payload.data, `Risk alert: ${payload.summary}`, 'urgent');
+        });
+      } else {
+        void this.issueDirective('pause-trading', 'trading', payload.data, `Risk alert: ${payload.summary}`, 'urgent');
+      }
     }
   }
 
@@ -367,9 +525,13 @@ export class CEOAgent {
 
   formatReport(portfolio?: Portfolio): string {
     const dash = this.getDashboard(portfolio);
+    const provider = this.brain.getLLMProvider();
+    const lastThought = this.brain.getLastThought();
     const lines = [
       '\n=== CEO DASHBOARD ===\n',
       `Cycle: ${this.cycleCount} | Status: ${this.paused ? 'PAUSED' : 'ACTIVE'}`,
+      `Brain: ${provider ? `${provider.name}/${provider.model}` : 'rule-based'} | AI: ${this.brain.isAIAvailable() ? 'ON' : 'OFF'}`,
+      ...(lastThought ? [`Last thought: "${lastThought.decision.slice(0, 80)}" (${(lastThought.confidence * 100).toFixed(0)}% conf, ${lastThought.durationMs}ms)`] : []),
       `Agents: ${dash.totalAgents} across ${dash.teams.length} teams`,
       `Assets: ${dash.activeAssets.length} active`,
       `Strategies: ${dash.activeStrategies.join(', ') || 'none'}`,

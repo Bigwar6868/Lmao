@@ -17,6 +17,7 @@ import { attachLiveFeed, registerAgentName, printSystemEvent, printSeparator, pr
 import type { AssetInfo, Timeframe, Signal, MarketData, Candle } from './shared/types.js';
 import type { AgentId } from './shared/agent-types.js';
 import { wireMessagingEvents, messageDispatcher } from './shared/messaging.js';
+import { OllamaProvider } from './shared/agent-brain.js';
 
 const log = createModuleLogger('orchestrator');
 
@@ -55,9 +56,13 @@ export class TradingSystem {
     // Attach live feed to network — shows agent communication in real-time
     attachLiveFeed(this.network);
 
-    // Create CEO
-    this.ceo = new CEOAgent(this.network);
-    registerAgentName(this.ceo.id, 'CEO');
+    // Create CEO — with Ollama brain if configured
+    const ollamaEndpoint = config.ollamaCeoEndpoint;
+    const ceoBrain = ollamaEndpoint
+      ? new OllamaProvider(ollamaEndpoint, config.ollamaCeoModel)
+      : undefined;
+    this.ceo = new CEOAgent(this.network, ceoBrain);
+    registerAgentName(this.ceo.id, ceoBrain ? `CEO (${config.ollamaCeoModel})` : 'CEO');
 
     // Create teams — each gets the network + CEO id
     this.tradingTeam = new TradingTeam(this.network, this.ceo.id);
@@ -323,9 +328,10 @@ export class TradingSystem {
     // 2. Research team generates signals
     const allSignals = await this.researchTeam.analyzeAll(marketDataMap, macro);
 
-    // 2b. Feed brain context to teams — they use this for autonomous thinking
+    // 2b. Feed brain context to teams + CEO — they use this for autonomous thinking
     this.researchTeam.updateBrainContext(marketDataMap, allSignals, macro);
     this.tradingTeam.updateBrainContext(marketDataMap, allSignals, macro);
+    this.ceo.updateContext(this.tradingTeam.getPortfolio(), macro);
 
     // 2c. Research team thinks about what it found (AI-powered if available)
     await this.researchTeam.brain.thinkAsync('What do the current signals tell us about market conditions?', {
@@ -397,7 +403,7 @@ export class TradingSystem {
       this.spawner.evolveUnderperformers();
     }
 
-    // 8. Trading team self-review every 10 cycles
+    // 8. Trading team self-review every 10 cycles + CEO strategic review
     if (cycle % 10 === 0) {
       const review = this.tradingTeam.reviewPerformance();
       console.log(`\n=== Trade Self-Review (Cycle ${cycle}) ===`);
@@ -405,6 +411,21 @@ export class TradingSystem {
       if (review.adjustments.length > 0) {
         console.log('Adjustments:');
         review.adjustments.forEach(a => console.log(`  - ${a}`));
+      }
+
+      // CEO brain strategic review (if LLM available)
+      if (this.ceo.brain.getLLMProvider()) {
+        const ceoThought = await this.ceo.think(
+          `Cycle ${cycle} review. ${tradeSignals.length} signals, ${executed} executed, ${rejected} rejected. Should we adjust strategy allocation, risk limits, or team focus?`,
+          { review: review.summary, executed, rejected, signalCount: tradeSignals.length },
+        );
+        console.log(`\n=== CEO Brain Review (${this.ceo.brain.getLLMProvider()!.name}/${this.ceo.brain.getLLMProvider()!.model}) ===`);
+        console.log(`Decision: ${ceoThought.decision}`);
+        console.log(`Confidence: ${(ceoThought.confidence * 100).toFixed(0)}% | Duration: ${ceoThought.durationMs}ms`);
+        if (ceoThought.steps.length > 0) {
+          console.log('Reasoning:');
+          ceoThought.steps.forEach(s => console.log(`  ${s.step}: ${s.conclusion}`));
+        }
       }
     }
 
