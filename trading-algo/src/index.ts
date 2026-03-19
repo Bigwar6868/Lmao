@@ -16,6 +16,7 @@ import { createModuleLogger } from './shared/logger.js';
 import { attachLiveFeed, registerAgentName, printSystemEvent, printSeparator, printAgentStatusTable } from './shared/live-feed.js';
 import type { AssetInfo, Timeframe, Signal, MarketData, Candle } from './shared/types.js';
 import type { AgentId } from './shared/agent-types.js';
+import { wireMessagingEvents, messageDispatcher } from './shared/messaging.js';
 
 const log = createModuleLogger('orchestrator');
 
@@ -135,7 +136,10 @@ export class TradingSystem {
       log.info({ improvement: event.data }, 'Strategy evolved!');
     });
 
-    // 9. Start autonomous loops for all teams — 24/7 independent lifecycle
+    // 9. Wire messaging — dispatches evolution/signal/alert events to Claude + OpenClaw
+    wireMessagingEvents();
+
+    // 10. Start autonomous loops for all teams — 24/7 independent lifecycle
     this.startAllLoops();
 
     log.info({
@@ -600,6 +604,7 @@ async function main() {
   for (const team of teams) {
     console.log(`  ${team.name}: ${team.memberIds.length} agents`);
   }
+  console.log(`Messaging: ${messageDispatcher.getTargets().map(t => t.channel).join(', ')}`);
   console.log('\nRun scripts:');
   console.log('  npm run paper-trade  — CEO-driven multi-team paper trading');
   console.log('  npm run backtest     — Backtest ALL assets');
