@@ -8,16 +8,20 @@ const log = createModuleLogger('messaging');
 // Message Types
 // ============================================================
 
-export type MessageChannel = 'claude' | 'openclaw';
+export type MessageChannel = 'claude' | 'kimiclaw' | 'ollama';
 
 export interface MessageTarget {
   channel: MessageChannel;
-  /** OpenClaw webhook URL or API endpoint */
+  /** Webhook URL or API endpoint (KimiClaw webhook, Ollama API, etc.) */
   endpoint?: string;
-  /** OpenClaw API key for authentication */
+  /** API key for authentication */
   apiKey?: string;
-  /** OpenClaw destination (e.g. 'telegram', 'discord', 'whatsapp') */
+  /** KimiClaw destination (e.g. 'telegram', 'discord', 'whatsapp', 'wechat') */
   destination?: string;
+  /** Model ID for LLM-backed channels (e.g. 'kimi', 'llama3', 'mistral', 'qwen') */
+  model?: string;
+  /** Message types this target should receive (undefined = all) */
+  filter?: TradingMessage['type'][];
 }
 
 export type MessagePriority = 'low' | 'normal' | 'high' | 'critical';
@@ -151,7 +155,19 @@ export function formatAlertMessage(
 
 /**
  * Dispatches trading messages to configured channels.
- * Supports Claude Code (stdout/log) and OpenClaw (webhook).
+ *
+ * Supports dual-model routing:
+ *   - Claude Code (structured logs — default)
+ *   - KimiClaw (webhook → WeChat, Telegram, Discord, WhatsApp)
+ *   - Ollama / open-source LLMs (local API for AI-powered analysis)
+ *
+ * You can run TWO models simultaneously, e.g.:
+ *   - KimiClaw (Kimi model) for signal notifications → WeChat
+ *   - Ollama (Llama/Mistral) for evolution analysis → local
+ *
+ * Configure via env vars:
+ *   KIMICLAW_WEBHOOK_URL, KIMICLAW_API_KEY, KIMICLAW_DESTINATION, KIMICLAW_MODEL
+ *   OLLAMA_ENDPOINT (default: http://localhost:11434), OLLAMA_MODEL (default: llama3)
  */
 export class MessageDispatcher {
   private targets: MessageTarget[] = [];
@@ -165,24 +181,39 @@ export class MessageDispatcher {
       // Default: Claude Code output
       this.targets = [{ channel: 'claude' }];
 
-      // Auto-detect OpenClaw from env
-      const openclawEndpoint = process.env.OPENCLAW_WEBHOOK_URL ?? process.env.OPENCLAW_ENDPOINT;
-      if (openclawEndpoint) {
+      // Auto-detect KimiClaw from env
+      const kimiclawEndpoint = process.env.KIMICLAW_WEBHOOK_URL ?? process.env.KIMICLAW_ENDPOINT;
+      if (kimiclawEndpoint) {
         this.targets.push({
-          channel: 'openclaw',
-          endpoint: openclawEndpoint,
-          apiKey: process.env.OPENCLAW_API_KEY,
-          destination: process.env.OPENCLAW_DESTINATION ?? 'telegram',
+          channel: 'kimiclaw',
+          endpoint: kimiclawEndpoint,
+          apiKey: process.env.KIMICLAW_API_KEY,
+          destination: process.env.KIMICLAW_DESTINATION ?? 'telegram',
+          model: process.env.KIMICLAW_MODEL ?? 'kimi',
+        });
+      }
+
+      // Auto-detect Ollama (local open-source LLM)
+      const ollamaEndpoint = process.env.OLLAMA_ENDPOINT;
+      if (ollamaEndpoint) {
+        this.targets.push({
+          channel: 'ollama',
+          endpoint: ollamaEndpoint,
+          model: process.env.OLLAMA_MODEL ?? 'llama3',
+          // Ollama only gets evolution + alert messages by default (analysis role)
+          filter: ['evolution', 'alert', 'portfolio'],
         });
       }
     }
 
-    log.info({ channels: this.targets.map(t => t.channel) }, 'MessageDispatcher initialized');
+    log.info({
+      channels: this.targets.map(t => `${t.channel}${t.model ? `(${t.model})` : ''}`),
+    }, 'MessageDispatcher initialized');
   }
 
   addTarget(target: MessageTarget): void {
     this.targets.push(target);
-    log.info({ channel: target.channel }, 'Message target added');
+    log.info({ channel: target.channel, model: target.model }, 'Message target added');
   }
 
   removeTarget(channel: MessageChannel): void {
@@ -195,6 +226,7 @@ export class MessageDispatcher {
 
   /**
    * Send a message to all configured targets.
+   * Each target can filter by message type.
    */
   async send(message: TradingMessage): Promise<void> {
     this.messageHistory.push(message);
@@ -203,13 +235,19 @@ export class MessageDispatcher {
     }
 
     for (const target of this.targets) {
+      // Check filter — skip if target doesn't want this message type
+      if (target.filter && !target.filter.includes(message.type)) continue;
+
       try {
         switch (target.channel) {
           case 'claude':
             this.sendToClaude(message);
             break;
-          case 'openclaw':
-            await this.sendToOpenClaw(message, target);
+          case 'kimiclaw':
+            await this.sendToKimiClaw(message, target);
+            break;
+          case 'ollama':
+            await this.sendToOllama(message, target);
             break;
         }
       } catch (err) {
@@ -233,21 +271,22 @@ export class MessageDispatcher {
   }
 
   /**
-   * Send to OpenClaw via webhook/API.
-   * OpenClaw expects a JSON payload with message content and routing info.
+   * Send to KimiClaw via webhook/API.
+   * KimiClaw routes messages to WeChat, Telegram, Discord, WhatsApp, etc.
    */
-  private async sendToOpenClaw(message: TradingMessage, target: MessageTarget): Promise<void> {
+  private async sendToKimiClaw(message: TradingMessage, target: MessageTarget): Promise<void> {
     if (!target.endpoint) {
-      log.warn('OpenClaw endpoint not configured — skipping');
+      log.warn('KimiClaw endpoint not configured — skipping');
       return;
     }
 
     const payload = {
-      // OpenClaw standard fields
+      // KimiClaw standard fields
       message: `**${message.title}**\n\n${message.body}`,
       destination: target.destination ?? 'telegram',
+      model: target.model ?? 'kimi',
       priority: message.priority,
-      // Structured data for OpenClaw agents
+      // Structured data for KimiClaw agents to process
       structured: {
         id: message.id,
         type: message.type,
@@ -258,6 +297,67 @@ export class MessageDispatcher {
       },
     };
 
+    await this.postWebhook(target, payload, 'KimiClaw');
+  }
+
+  /**
+   * Send to a local Ollama instance for AI-powered analysis.
+   * The open-source LLM can analyze evolution results, suggest parameter
+   * tweaks, or provide a second opinion on trading signals.
+   */
+  private async sendToOllama(message: TradingMessage, target: MessageTarget): Promise<void> {
+    if (!target.endpoint) {
+      log.warn('Ollama endpoint not configured — skipping');
+      return;
+    }
+
+    const systemPrompt = 'You are a quantitative trading analyst. Analyze the following trading system update and provide brief, actionable insights. Focus on risk, opportunity, and what to monitor next.';
+
+    const payload = {
+      model: target.model ?? 'llama3',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: `${message.title}\n\n${message.body}` },
+      ],
+      stream: false,
+    };
+
+    const endpoint = `${target.endpoint.replace(/\/$/, '')}/api/chat`;
+
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(30000), // LLM inference can be slow
+      });
+
+      if (response.ok) {
+        const result = await response.json() as { message?: { content?: string } };
+        const analysis = result.message?.content;
+        if (analysis) {
+          log.info({
+            model: target.model,
+            messageType: message.type,
+            analysis: analysis.slice(0, 200),
+          }, `[Ollama/${target.model}] ${analysis}`);
+        }
+      } else {
+        log.warn({ status: response.status, endpoint }, 'Ollama returned non-OK status');
+      }
+    } catch (err) {
+      log.error({ error: err, endpoint }, 'Ollama request failed');
+    }
+  }
+
+  /**
+   * Generic webhook POST helper.
+   */
+  private async postWebhook(
+    target: MessageTarget,
+    payload: Record<string, unknown>,
+    label: string,
+  ): Promise<void> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
     };
@@ -266,7 +366,7 @@ export class MessageDispatcher {
     }
 
     try {
-      const response = await fetch(target.endpoint, {
+      const response = await fetch(target.endpoint!, {
         method: 'POST',
         headers,
         body: JSON.stringify(payload),
@@ -274,15 +374,12 @@ export class MessageDispatcher {
       });
 
       if (!response.ok) {
-        log.warn({
-          status: response.status,
-          endpoint: target.endpoint,
-        }, 'OpenClaw webhook returned non-OK status');
+        log.warn({ status: response.status, endpoint: target.endpoint }, `${label} webhook returned non-OK status`);
       } else {
-        log.debug({ endpoint: target.endpoint }, 'Message sent to OpenClaw');
+        log.debug({ endpoint: target.endpoint }, `Message sent to ${label}`);
       }
     } catch (err) {
-      log.error({ error: err, endpoint: target.endpoint }, 'OpenClaw webhook failed');
+      log.error({ error: err, endpoint: target.endpoint }, `${label} webhook failed`);
     }
   }
 
