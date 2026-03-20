@@ -68,6 +68,17 @@ class Config:
     data_dir: str = field(default_factory=lambda: os.path.join(os.path.dirname(os.path.dirname(__file__)), "data"))
     cache_enabled: bool = True
 
+    # FRED API (macro economist)
+    fred_api_key: str = field(default_factory=lambda: os.environ.get("FRED_API_KEY", ""))
+
+    # Ollama (agent brain)
+    ollama_url: str = field(default_factory=lambda: os.environ.get("OLLAMA_URL", "http://localhost:11434"))
+    ollama_model: str = field(default_factory=lambda: os.environ.get("OLLAMA_MODEL", "llama3"))
+
+    # Agent network
+    network_message_timeout_ms: int = 5000
+    max_agents: int = 30
+
     # Telegram Bot
     telegram_bot_token: str = field(default_factory=lambda: os.environ.get("TELEGRAM_BOT_TOKEN", ""))
     telegram_chat_id: str = field(default_factory=lambda: os.environ.get("TELEGRAM_CHAT_ID", ""))

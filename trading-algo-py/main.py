@@ -1,10 +1,12 @@
 """Trading Algorithm Orchestrator — main entry point.
 
-Coordinates all modules: market data, strategies, risk, execution, evolution.
+Coordinates all modules: market data, strategies, risk, execution, evolution,
+agent network, regime detection, macro, sentiment, diagnostics, scenario simulation.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sys
 import time
@@ -20,6 +22,13 @@ from team.technical_strategist.selector import (
 )
 from team.risk_manager.risk import RiskManager
 from team.executor.executor import Executor
+from team.agent_network import AgentNetwork, AgentSpawner, DecayDetector
+from team.regime_detector import RegimeDetector
+from team.macro_economist import MacroEconomist
+from team.sentiment_analyst import SentimentAnalyst
+from team.scenario_simulator import ScenarioSimulator
+from team.diagnostics import DiagnosticsEngine
+from team.opportunity_scanner import OpportunityScanner
 
 # Configure logging
 logging.basicConfig(
@@ -31,13 +40,27 @@ log = logging.getLogger("orchestrator")
 
 
 class TradingOrchestrator:
-    """Main orchestrator — runs the trading cycle."""
+    """Main orchestrator — runs the full trading cycle with all modules."""
 
     def __init__(self, auto_select: bool = True) -> None:
+        # Core modules
         self.analyst = MarketAnalyst()
         self.strategies = get_all_strategies()
         self.risk_manager = RiskManager()
         self.executor = Executor()
+
+        # Agent network
+        self.network = AgentNetwork()
+        self.decay_detector = DecayDetector()
+
+        # Analysis modules
+        self.regime_detector = RegimeDetector()
+        self.macro_economist = MacroEconomist()
+        self.sentiment_analyst = SentimentAnalyst()
+        self.scenario_simulator = ScenarioSimulator()
+        self.diagnostics = DiagnosticsEngine()
+        self.opportunity_scanner = OpportunityScanner()
+
         self.cycle_count = 0
         self.auto_select = auto_select
         self.selection = None
@@ -210,9 +233,58 @@ def main():
             selection = select_best_strategies()
             print_selection_report(selection)
 
+        elif cmd == "regime":
+            # Detect market regime for first few assets
+            assets = ALL_ASSETS[:5]
+            for asset in assets:
+                data = orchestrator.analyst.fetch_market_data(asset, config.default_timeframe)
+                if data and data.candles:
+                    analysis = orchestrator.regime_detector.detect(data.candles)
+                    print(f"\n{asset.symbol}: {analysis.regime.value} (confidence={analysis.confidence:.2f})")
+                    print(f"  {analysis.details}")
+
+        elif cmd == "macro":
+            env = asyncio.run(orchestrator.macro_economist.get_environment())
+            report = asyncio.run(orchestrator.macro_economist.get_geopolitical_report())
+            print(f"\nMacro bias: {env.bias} | Risk: {env.risk_level}")
+            print(report)
+
+        elif cmd == "sentiment":
+            symbols = [a.symbol.split("/")[0] for a in ALL_ASSETS[:10]]
+            scores = orchestrator.sentiment_analyst.analyze(symbols)
+            overall = orchestrator.sentiment_analyst.get_overall_sentiment()
+            print(f"\nSentiment ({len(scores)} assets): overall={overall:.3f}")
+            for s in scores:
+                print(f"  {s.asset}: {s.score:+.3f} (source={s.source})")
+
+        elif cmd == "diagnose":
+            candles_map = {}
+            for asset in ALL_ASSETS[:5]:
+                data = orchestrator.analyst.fetch_market_data(asset, config.default_timeframe)
+                if data and data.candles:
+                    candles_map[asset.symbol] = data.candles
+            report = orchestrator.diagnostics.scan(candles=candles_map)
+            print(DiagnosticsEngine.format_report(report))
+
+        elif cmd == "opportunities":
+            # Scan for trading opportunities
+            market_data_list = orchestrator.analyst.fetch_all(ALL_ASSETS, config.default_timeframe)
+            all_signals = []
+            md_map = {}
+            for data in market_data_list:
+                md_map[data.asset.symbol] = data
+                for strategy in orchestrator.strategies:
+                    try:
+                        signals = strategy.analyze(data)
+                        all_signals.extend(s for s in signals if s.action != SignalAction.HOLD)
+                    except Exception:
+                        pass
+            opps = orchestrator.opportunity_scanner.scan(all_signals, md_map)
+            print(OpportunityScanner.format_report(opps))
+
         else:
             print(f"Unknown command: {cmd}")
-            print("Usage: python main.py [backtest|paper-trade|evolve|analyze|auto-select]")
+            print("Usage: python main.py [backtest|paper-trade|evolve|analyze|auto-select|regime|macro|sentiment|diagnose|opportunities]")
     else:
         # Default: single cycle
         orchestrator.run_cycle()

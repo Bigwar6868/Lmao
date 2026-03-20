@@ -222,3 +222,108 @@ class BacktestResult:
     trades: list[Order] = field(default_factory=list)
     equity_curve: list[dict] = field(default_factory=list)
     dna: StrategyDNA | None = None
+
+
+# ============================================================
+# Macro
+# ============================================================
+
+class MacroImpact(str, Enum):
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+
+@dataclass
+class MacroIndicator:
+    name: str
+    value: float
+    previous_value: float
+    date: str
+    source: str
+    impact: Literal["high", "medium", "low"] = "low"
+
+
+@dataclass
+class SentimentScore:
+    asset: str
+    score: float        # -1.0 (bearish) to 1.0 (bullish)
+    volume: int         # number of data points
+    source: str
+    timestamp: int = 0
+
+
+@dataclass
+class MacroEnvironment:
+    indicators: list[MacroIndicator]
+    sentiment: list[SentimentScore]
+    risk_level: Literal["low", "medium", "high", "extreme"]
+    bias: Literal["bullish", "bearish", "neutral"]
+    timestamp: int = 0
+
+
+# ============================================================
+# Macro Economist — Local Types
+# ============================================================
+
+class GeopoliticalCategory(str, Enum):
+    CONFLICT = "conflict"
+    SANCTIONS = "sanctions"
+    TRADE_WAR = "trade-war"
+    ELECTION = "election"
+    POLICY = "policy"
+    REGULATORY = "regulatory"
+    ENERGY = "energy"
+    PANDEMIC = "pandemic"
+    DEBT_CRISIS = "debt-crisis"
+
+
+@dataclass
+class GeopoliticalFactor:
+    category: str  # GeopoliticalCategory value
+    region: str
+    description: str
+    severity: Literal["low", "medium", "high", "critical"]
+    affected_assets: list[str] = field(default_factory=list)
+    market_impact: Literal["bullish", "bearish", "volatile", "neutral"] = "neutral"
+
+
+@dataclass
+class GeopoliticalRisk:
+    score: int              # 0-100
+    level: Literal["low", "medium", "high", "extreme"]
+    vix_level: float
+    factors: list[GeopoliticalFactor] = field(default_factory=list)
+    timestamp: int = 0
+
+
+@dataclass
+class PolicyChange:
+    country: str
+    institution: str
+    type: Literal["monetary", "fiscal", "regulatory", "trade"]
+    description: str
+    impact: Literal["hawkish", "dovish", "neutral", "restrictive", "expansionary"]
+    affected_markets: list[str] = field(default_factory=list)
+    effective_date: str = ""
+    severity: Literal["low", "medium", "high"] = "low"
+
+
+@dataclass
+class GlobalMacroSnapshot:
+    region: str
+    indicators: dict[str, float] = field(default_factory=dict)
+    policy_stance: Literal["hawkish", "dovish", "neutral"] = "neutral"
+    growth_outlook: Literal["expanding", "slowing", "contracting", "recovering"] = "slowing"
+    inflation_trend: Literal["rising", "falling", "stable", "sticky"] = "stable"
+    timestamp: int = 0
+
+
+@dataclass
+class EconomicEvent:
+    name: str
+    description: str
+    impact: Literal["high", "medium", "low"]
+    schedule: str
+    next_date: str
+    source: str
