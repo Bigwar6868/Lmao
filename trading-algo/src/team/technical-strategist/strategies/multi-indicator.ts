@@ -9,7 +9,7 @@ import type {
 } from '../../../shared/types.js';
 import { generateId } from '../../../shared/utils.js';
 import { createModuleLogger } from '../../../shared/logger.js';
-import { RSI, MACD, BollingerBands } from '../indicators.js';
+import { RSI, MACD, BollingerBands, EMA } from '../indicators.js';
 import { generateSignal } from '../signals.js';
 
 const log = createModuleLogger('strategy:multi-indicator');
@@ -79,7 +79,9 @@ export class MultiIndicatorStrategy implements Strategy {
     const macdWeight = p.macdWeight ?? 0.4;
     const bbWeight = p.bbWeight ?? 0.3;
 
-    const minCandles = Math.max(macdSlow + macdSignalPeriod, bbPeriod, rsiPeriod + 1) + 1;
+    const trendPeriod = p.trendEma ?? 200;
+
+    const minCandles = Math.max(macdSlow + macdSignalPeriod, bbPeriod, rsiPeriod + 1, trendPeriod) + 1;
     if (candles.length < minCandles) {
       log.warn({ candles: candles.length, required: minCandles }, 'Not enough candles for multi-indicator analysis');
       return signals;
@@ -88,6 +90,7 @@ export class MultiIndicatorStrategy implements Strategy {
     const rsi = RSI(candles, rsiPeriod);
     const macd = MACD(candles, macdFast, macdSlow, macdSignalPeriod);
     const bb = BollingerBands(candles, bbPeriod, bbStdDev);
+    const trendEma = EMA(candles, trendPeriod).values;
 
     const lastIdx = candles.length - 1;
     const price = candles[lastIdx].close;
@@ -98,15 +101,30 @@ export class MultiIndicatorStrategy implements Strategy {
     const upperBand = bb.upper[lastIdx];
     const lowerBand = bb.lower[lastIdx];
     const middleBand = bb.middle[lastIdx];
+    const currentTrend = trendEma[lastIdx];
 
     if (
       isNaN(currentRsi) || isNaN(currentMacd) || isNaN(currentMacdSignal) ||
-      isNaN(upperBand) || isNaN(lowerBand)
+      isNaN(upperBand) || isNaN(lowerBand) || isNaN(currentTrend)
     ) {
       return signals;
     }
 
+    // Trend direction from 200 EMA
+    const bullishTrend = price > currentTrend;
+    const bearishTrend = price < currentTrend;
+    const trendWeight = 0.2;
+
     const votes: Vote[] = [];
+
+    // Trend vote (new — ensures we trade WITH the trend)
+    if (bullishTrend) {
+      votes.push({ action: 'BUY', weight: trendWeight, reason: `Price above EMA(${trendPeriod}) — bullish trend` });
+    } else if (bearishTrend) {
+      votes.push({ action: 'SELL', weight: trendWeight, reason: `Price below EMA(${trendPeriod}) — bearish trend` });
+    } else {
+      votes.push({ action: 'HOLD', weight: trendWeight, reason: `Price at EMA(${trendPeriod}) — no clear trend` });
+    }
 
     // RSI vote
     if (currentRsi < rsiOversold) {
@@ -117,7 +135,7 @@ export class MultiIndicatorStrategy implements Strategy {
       votes.push({ action: 'HOLD', weight: rsiWeight, reason: `RSI=${currentRsi.toFixed(1)} neutral` });
     }
 
-    // MACD vote: based on histogram direction and MACD vs signal
+    // MACD vote
     if (currentMacd > currentMacdSignal && currentHistogram > 0) {
       votes.push({ action: 'BUY', weight: macdWeight, reason: `MACD above signal, histogram=${currentHistogram.toFixed(4)}` });
     } else if (currentMacd < currentMacdSignal && currentHistogram < 0) {
@@ -139,6 +157,7 @@ export class MultiIndicatorStrategy implements Strategy {
     let buyScore = 0;
     let sellScore = 0;
     let holdScore = 0;
+    const totalWeight = trendWeight + rsiWeight + macdWeight + bbWeight;
     const reasons: string[] = [];
 
     for (const vote of votes) {
@@ -164,26 +183,28 @@ export class MultiIndicatorStrategy implements Strategy {
       bbUpper: upperBand,
       bbMiddle: middleBand,
       bbLower: lowerBand,
+      trendEma: currentTrend,
       buyScore,
       sellScore,
       holdScore,
     };
 
-    // Determine majority vote
+    // Require >60% consensus (not just bare majority)
+    const consensusThreshold = totalWeight * 0.6;
     const maxScore = Math.max(buyScore, sellScore, holdScore);
     let action: SignalAction;
 
-    if (maxScore === buyScore && buyScore > sellScore) {
+    if (buyScore >= consensusThreshold && buyScore > sellScore) {
       action = 'BUY';
-    } else if (maxScore === sellScore && sellScore > buyScore) {
+    } else if (sellScore >= consensusThreshold && sellScore > buyScore) {
       action = 'SELL';
     } else {
-      // HOLD wins or tie — no signal
+      // No consensus — no signal
       return signals;
     }
 
-    // Confidence = winning score (already weighted 0-1)
-    const confidence = Math.min(1, maxScore);
+    // Confidence = normalised winning score (how much agreement / total possible)
+    const confidence = Math.min(1, maxScore / totalWeight);
 
     signals.push(
       generateSignal(
@@ -194,7 +215,7 @@ export class MultiIndicatorStrategy implements Strategy {
         this.name,
         timeframe,
         indicators,
-        `Multi-indicator vote: ${reasons.join('; ')}`,
+        `Multi-indicator consensus (${(maxScore / totalWeight * 100).toFixed(0)}%): ${reasons.join('; ')}`,
       ),
     );
 

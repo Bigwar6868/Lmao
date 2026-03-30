@@ -8,7 +8,7 @@ import type {
 } from '../../../shared/types.js';
 import { generateId } from '../../../shared/utils.js';
 import { createModuleLogger } from '../../../shared/logger.js';
-import { BollingerBands, RSI } from '../indicators.js';
+import { BollingerBands, RSI, EMA } from '../indicators.js';
 import { generateSignal } from '../signals.js';
 
 const log = createModuleLogger('strategy:mean-reversion');
@@ -58,8 +58,9 @@ export class MeanReversionStrategy implements Strategy {
     const rsiPeriod = this.dna.params.rsiPeriod ?? 14;
     const oversold = this.dna.params.oversold ?? 30;
     const overbought = this.dna.params.overbought ?? 70;
+    const trendPeriod = this.dna.params.trendEma ?? 200;
 
-    const minCandles = Math.max(bbPeriod, rsiPeriod + 1) + 1;
+    const minCandles = Math.max(bbPeriod, rsiPeriod + 1, trendPeriod) + 1;
     if (candles.length < minCandles) {
       log.warn({ candles: candles.length, required: minCandles }, 'Not enough candles for mean-reversion analysis');
       return signals;
@@ -67,6 +68,7 @@ export class MeanReversionStrategy implements Strategy {
 
     const bb = BollingerBands(candles, bbPeriod, bbStdDev);
     const rsi = RSI(candles, rsiPeriod);
+    const trendEma = EMA(candles, trendPeriod).values;
 
     const lastIdx = candles.length - 1;
     const price = candles[lastIdx].close;
@@ -74,26 +76,35 @@ export class MeanReversionStrategy implements Strategy {
     const lowerBand = bb.lower[lastIdx];
     const middleBand = bb.middle[lastIdx];
     const currentRsi = rsi.values[lastIdx];
+    const currentTrend = trendEma[lastIdx];
 
-    if (isNaN(upperBand) || isNaN(lowerBand) || isNaN(currentRsi)) {
+    if (isNaN(upperBand) || isNaN(lowerBand) || isNaN(currentRsi) || isNaN(currentTrend)) {
       return signals;
     }
 
+    // Regime filter: mean-reversion works best when price is NEAR the trend EMA
+    // (range-bound). Skip when price is far from trend (strong trend = don't fade it).
+    const trendDeviation = Math.abs(price - currentTrend) / currentTrend;
+    const isRangeBound = trendDeviation < 0.03; // within 3% of 200 EMA = range-bound
+
+    const bandwidth = upperBand - lowerBand;
     const indicators: Record<string, number> = {
       bbUpper: upperBand,
       bbMiddle: middleBand,
       bbLower: lowerBand,
       rsi: currentRsi,
       bandwidth: bb.bandwidth[lastIdx],
+      trendEma: currentTrend,
+      trendDeviation,
     };
 
-    // BUY: price at or below lower band + RSI oversold
-    const bandwidth = upperBand - lowerBand;
-    if (price <= lowerBand && currentRsi < oversold && bandwidth > 0) {
-      // Confidence: how far below band + how extreme the RSI
+    // BUY: price at or below lower band + RSI oversold + range-bound regime
+    if (price <= lowerBand && currentRsi < oversold && bandwidth > 0 && isRangeBound) {
       const bandDistance = (lowerBand - price) / bandwidth;
       const rsiExtremity = (oversold - currentRsi) / oversold;
-      const confidence = Math.min(1, 0.5 + bandDistance * 0.3 + rsiExtremity * 0.3);
+      // Confidence penalised if near trend boundary (less range-bound)
+      const regimePenalty = Math.min(0.1, trendDeviation * 5);
+      const confidence = Math.min(1, 0.45 + bandDistance * 0.3 + rsiExtremity * 0.3 - regimePenalty);
 
       signals.push(
         generateSignal(
@@ -104,16 +115,17 @@ export class MeanReversionStrategy implements Strategy {
           this.name,
           timeframe,
           indicators,
-          `Price touched lower BB (${lowerBand.toFixed(2)}), RSI=${currentRsi.toFixed(1)} oversold — mean reversion buy`,
+          `Price at lower BB (${lowerBand.toFixed(2)}), RSI=${currentRsi.toFixed(1)} oversold, range-bound regime — mean reversion buy`,
         ),
       );
     }
 
-    // SELL: price at or above upper band + RSI overbought
-    if (price >= upperBand && currentRsi > overbought && bandwidth > 0) {
+    // SELL: price at or above upper band + RSI overbought + range-bound regime
+    if (price >= upperBand && currentRsi > overbought && bandwidth > 0 && isRangeBound) {
       const bandDistance = (price - upperBand) / bandwidth;
       const rsiExtremity = (currentRsi - overbought) / (100 - overbought);
-      const confidence = Math.min(1, 0.5 + bandDistance * 0.3 + rsiExtremity * 0.3);
+      const regimePenalty = Math.min(0.1, trendDeviation * 5);
+      const confidence = Math.min(1, 0.45 + bandDistance * 0.3 + rsiExtremity * 0.3 - regimePenalty);
 
       signals.push(
         generateSignal(
@@ -124,7 +136,7 @@ export class MeanReversionStrategy implements Strategy {
           this.name,
           timeframe,
           indicators,
-          `Price touched upper BB (${upperBand.toFixed(2)}), RSI=${currentRsi.toFixed(1)} overbought — mean reversion sell`,
+          `Price at upper BB (${upperBand.toFixed(2)}), RSI=${currentRsi.toFixed(1)} overbought, range-bound regime — mean reversion sell`,
         ),
       );
     }

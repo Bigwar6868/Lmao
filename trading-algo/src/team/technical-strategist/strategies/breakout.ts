@@ -8,7 +8,7 @@ import type {
 } from '../../../shared/types.js';
 import { generateId, mean } from '../../../shared/utils.js';
 import { createModuleLogger } from '../../../shared/logger.js';
-import { BollingerBands } from '../indicators.js';
+import { BollingerBands, EMA } from '../indicators.js';
 import { generateSignal } from '../signals.js';
 
 const log = createModuleLogger('strategy:breakout');
@@ -57,14 +57,16 @@ export class BreakoutStrategy implements Strategy {
     const squeezeThreshold = this.dna.params.squeezeThreshold ?? 0.05;
     const volumeMultiplier = this.dna.params.volumeMultiplier ?? 1.5;
 
-    // Need extra candles to detect squeeze history
-    const minCandles = bbPeriod + 5;
+    const trendPeriod = this.dna.params.trendEma ?? 50;
+
+    const minCandles = Math.max(bbPeriod + 5, trendPeriod + 1);
     if (candles.length < minCandles) {
       log.warn({ candles: candles.length, required: minCandles }, 'Not enough candles for breakout analysis');
       return signals;
     }
 
     const bb = BollingerBands(candles, bbPeriod, bbStdDev);
+    const trendEma = EMA(candles, trendPeriod).values;
 
     const lastIdx = candles.length - 1;
     const prevIdx = lastIdx - 1;
@@ -111,6 +113,10 @@ export class BreakoutStrategy implements Strategy {
     const lowerBand = bb.lower[lastIdx];
     const middleBand = bb.middle[lastIdx];
 
+    const currentTrend = trendEma[lastIdx];
+    const trendAligned = (direction: 'up' | 'down') =>
+      !isNaN(currentTrend) && (direction === 'up' ? price > currentTrend : price < currentTrend);
+
     const indicators: Record<string, number> = {
       bbUpper: upperBand,
       bbMiddle: middleBand,
@@ -120,14 +126,16 @@ export class BreakoutStrategy implements Strategy {
       volume: currentVolume,
       avgVolume,
       volumeRatio: currentVolume / avgVolume,
+      trendEma: currentTrend,
     };
 
-    // Determine breakout direction
-    if (price > upperBand) {
-      // Upward breakout
+    // Determine breakout direction — require trend alignment
+    if (price > upperBand && trendAligned('up')) {
       const volumeStrength = Math.min(1, (currentVolume / avgVolume - 1) / 2);
       const bandBreak = (price - upperBand) / (upperBand - lowerBand);
-      const confidence = Math.min(1, 0.5 + volumeStrength * 0.25 + bandBreak * 0.25);
+      // Trend bonus: stronger when breakout aligns with 50 EMA direction
+      const trendBonus = !isNaN(currentTrend) ? Math.min(0.1, Math.abs(price - currentTrend) / currentTrend * 3) : 0;
+      const confidence = Math.min(1, 0.4 + volumeStrength * 0.25 + bandBreak * 0.2 + trendBonus);
 
       signals.push(
         generateSignal(
@@ -138,14 +146,14 @@ export class BreakoutStrategy implements Strategy {
           this.name,
           timeframe,
           indicators,
-          `Upward breakout after BB squeeze (bandwidth ${prevBandwidth.toFixed(4)} -> ${currentBandwidth.toFixed(4)}), volume spike ${(currentVolume / avgVolume).toFixed(1)}x`,
+          `Upward breakout after squeeze (BW ${prevBandwidth.toFixed(4)}->${currentBandwidth.toFixed(4)}), vol ${(currentVolume / avgVolume).toFixed(1)}x, trend aligned`,
         ),
       );
-    } else if (price < lowerBand) {
-      // Downward breakout
+    } else if (price < lowerBand && trendAligned('down')) {
       const volumeStrength = Math.min(1, (currentVolume / avgVolume - 1) / 2);
       const bandBreak = (lowerBand - price) / (upperBand - lowerBand);
-      const confidence = Math.min(1, 0.5 + volumeStrength * 0.25 + bandBreak * 0.25);
+      const trendBonus = !isNaN(currentTrend) ? Math.min(0.1, Math.abs(price - currentTrend) / currentTrend * 3) : 0;
+      const confidence = Math.min(1, 0.4 + volumeStrength * 0.25 + bandBreak * 0.2 + trendBonus);
 
       signals.push(
         generateSignal(
@@ -156,7 +164,7 @@ export class BreakoutStrategy implements Strategy {
           this.name,
           timeframe,
           indicators,
-          `Downward breakout after BB squeeze (bandwidth ${prevBandwidth.toFixed(4)} -> ${currentBandwidth.toFixed(4)}), volume spike ${(currentVolume / avgVolume).toFixed(1)}x`,
+          `Downward breakout after squeeze (BW ${prevBandwidth.toFixed(4)}->${currentBandwidth.toFixed(4)}), vol ${(currentVolume / avgVolume).toFixed(1)}x, trend aligned`,
         ),
       );
     }

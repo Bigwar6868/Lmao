@@ -36,6 +36,9 @@ const MAX_EXPOSURE_PER_ASSET_PCT = 15;
 /** Drawdown warning threshold (% of max). Emits risk:alert when crossed. */
 const DRAWDOWN_WARN_PCT = 0.75;
 
+/** Minimum confidence to approve a trade. Below this = HOLD. */
+const MIN_CONFIDENCE = 0.55;
+
 export class RiskManager {
   readonly kelly = new KellyCriterion();
   readonly sizer = new PositionSizer();
@@ -69,16 +72,23 @@ export class RiskManager {
     const kellyFrac = config.kellyFraction * 0.5; // conservative default
     // (In a live system this would call kelly.calculateFromTrades on historical orders)
 
-    // 3. Position size
+    // 3. Position size — scaled by signal confidence
     let positionSize = this.sizer.calculateSize(signal, portfolio, atr, kellyFrac);
+    // Confidence scaling: high confidence (0.8+) → full size, low (0.55) → 60% size
+    const confidenceScale = 0.5 + (signal.confidence * 0.5);
+    positionSize = roundTo(positionSize * confidenceScale, 2);
     if (macro) {
       positionSize = this.sizer.adjustForMacro(positionSize, macro);
     }
 
-    // 4. Stop loss & take profit
+    // 4. Stop loss & take profit — widen for high-confidence signals
     const side = signal.action === 'BUY' ? 'buy' as const : 'sell' as const;
-    const stopLossPrice = this.stops.calculateStopLoss(signal.price, side, atr);
-    const takeProfitPrice = this.stops.calculateTakeProfit(signal.price, side, atr);
+    // High confidence → wider stops (give trade room), low confidence → tighter stops
+    const stopMultiplier = 0.8 + (signal.confidence * 0.4); // 0.8x at conf=0, 1.2x at conf=1.0
+    const stopLossPrice = this.stops.calculateStopLoss(signal.price, side, atr * stopMultiplier);
+    // Higher R:R for high-confidence: 1.5:1 at low conf → 3:1 at high conf
+    const tpMultiplier = 1.0 + (signal.confidence * 0.5); // 1.0x at conf=0, 1.5x at conf=1.0
+    const takeProfitPrice = this.stops.calculateTakeProfit(signal.price, side, atr * tpMultiplier);
 
     // Risk-reward ratio
     const riskPerUnit = Math.abs(signal.price - stopLossPrice);

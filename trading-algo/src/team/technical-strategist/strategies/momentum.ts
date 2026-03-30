@@ -56,8 +56,9 @@ export class MomentumStrategy implements Strategy {
     const slowPeriod = this.dna.params.slowEma ?? 21;
     const rsiPeriod = this.dna.params.rsiPeriod ?? 14;
     const rsiThreshold = this.dna.params.rsiThreshold ?? 50;
+    const trendPeriod = this.dna.params.trendEma ?? 200;
 
-    const minCandles = Math.max(slowPeriod, rsiPeriod) + 2;
+    const minCandles = Math.max(slowPeriod, rsiPeriod, trendPeriod) + 2;
     if (candles.length < minCandles) {
       log.warn({ candles: candles.length, required: minCandles }, 'Not enough candles for momentum analysis');
       return signals;
@@ -65,15 +66,15 @@ export class MomentumStrategy implements Strategy {
 
     const fastEma = EMA(candles, fastPeriod).values;
     const slowEma = EMA(candles, slowPeriod).values;
+    const trendEma = EMA(candles, trendPeriod).values;
     const rsi = RSI(candles, rsiPeriod).values;
 
     const lastIdx = candles.length - 1;
     const prevIdx = lastIdx - 1;
 
-    // Ensure we have valid indicator values
     if (
       isNaN(fastEma[lastIdx]) || isNaN(slowEma[lastIdx]) || isNaN(rsi[lastIdx]) ||
-      isNaN(fastEma[prevIdx]) || isNaN(slowEma[prevIdx])
+      isNaN(fastEma[prevIdx]) || isNaN(slowEma[prevIdx]) || isNaN(trendEma[lastIdx])
     ) {
       return signals;
     }
@@ -82,26 +83,36 @@ export class MomentumStrategy implements Strategy {
     const currentSlow = slowEma[lastIdx];
     const prevFast = fastEma[prevIdx];
     const prevSlow = slowEma[prevIdx];
+    const currentTrend = trendEma[lastIdx];
     const currentRsi = rsi[lastIdx];
     const price = candles[lastIdx].close;
+
+    // Trend filter: only trade WITH the 200 EMA trend
+    const bullishTrend = price > currentTrend;
+    const bearishTrend = price < currentTrend;
 
     // Crossover detection
     const bullishCrossover = prevFast <= prevSlow && currentFast > currentSlow;
     const bearishCrossover = prevFast >= prevSlow && currentFast < currentSlow;
 
-    // Calculate confidence based on RSI distance from threshold and EMA separation
+    // Confidence: EMA separation + RSI strength + trend alignment
     const emaSeparation = Math.abs(currentFast - currentSlow) / price;
-    const rsiDistance = Math.abs(currentRsi - rsiThreshold) / 50; // normalize 0-1
-    const confidence = Math.min(1, 0.5 + emaSeparation * 10 + rsiDistance * 0.3);
+    const rsiDistance = Math.abs(currentRsi - rsiThreshold) / 50;
+    const trendDistance = Math.abs(price - currentTrend) / currentTrend; // how far from trend
+    const trendBonus = Math.min(0.15, trendDistance * 5); // up to +0.15 for strong trend alignment
+
+    let confidence = Math.min(1, 0.4 + emaSeparation * 8 + rsiDistance * 0.25 + trendBonus);
 
     const indicators: Record<string, number> = {
       fastEma: currentFast,
       slowEma: currentSlow,
+      trendEma: currentTrend,
       rsi: currentRsi,
       emaSeparation,
+      trendDistance,
     };
 
-    if (bullishCrossover && currentRsi > rsiThreshold) {
+    if (bullishCrossover && currentRsi > rsiThreshold && bullishTrend) {
       signals.push(
         generateSignal(
           asset,
@@ -111,10 +122,10 @@ export class MomentumStrategy implements Strategy {
           this.name,
           timeframe,
           indicators,
-          `EMA(${fastPeriod}) crossed above EMA(${slowPeriod}), RSI(${rsiPeriod})=${currentRsi.toFixed(1)} confirms bullish momentum`,
+          `EMA(${fastPeriod}) crossed above EMA(${slowPeriod}), RSI=${currentRsi.toFixed(1)}, price above EMA(${trendPeriod}) trend`,
         ),
       );
-    } else if (bearishCrossover && currentRsi < rsiThreshold) {
+    } else if (bearishCrossover && currentRsi < rsiThreshold && bearishTrend) {
       signals.push(
         generateSignal(
           asset,
@@ -124,7 +135,7 @@ export class MomentumStrategy implements Strategy {
           this.name,
           timeframe,
           indicators,
-          `EMA(${fastPeriod}) crossed below EMA(${slowPeriod}), RSI(${rsiPeriod})=${currentRsi.toFixed(1)} confirms bearish momentum`,
+          `EMA(${fastPeriod}) crossed below EMA(${slowPeriod}), RSI=${currentRsi.toFixed(1)}, price below EMA(${trendPeriod}) trend`,
         ),
       );
     }
