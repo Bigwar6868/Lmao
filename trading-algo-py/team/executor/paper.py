@@ -25,12 +25,14 @@ class PaperTrader:
         slippage: float = 0.0005,
         commission: float = 0.001,
         max_open_positions: int = 10,
+        max_per_pair: int = 2,
     ) -> None:
         self.initial_capital = initial_capital
         self.available_capital = initial_capital
         self.slippage = slippage
         self.commission = commission
         self.max_open = max_open_positions
+        self.max_per_pair = max_per_pair
 
         self.positions: list[Position] = []
         self.closed_positions: list[Position] = []
@@ -52,6 +54,14 @@ class PaperTrader:
         open_count = sum(1 for p in self.positions if p.status == PositionStatus.OPEN)
         if open_count >= self.max_open:
             return {"success": False, "error": f"Max positions reached ({self.max_open})"}
+
+        # Per-pair position limit — prevent duplicate positions on same pair
+        pair_count = sum(
+            1 for p in self.positions
+            if p.status == PositionStatus.OPEN and p.asset.symbol == signal.asset.symbol
+        )
+        if pair_count >= self.max_per_pair:
+            return {"success": False, "error": f"Max {self.max_per_pair} positions per pair ({signal.asset.symbol})"}
 
         # Calculate position size
         quantity = risk.recommended_size / signal.price if signal.price > 0 else 0

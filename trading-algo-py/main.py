@@ -583,7 +583,7 @@ def main():
             while True:
                 try:
                     result = orchestrator.run_ceo_cycle()
-                    cycle_interval = getattr(config, 'auto_trade_cycle_ms', 60000) // 1000
+                    cycle_interval = getattr(config, 'auto_trade_cycle_ms', 300000) // 1000  # 5 min default
                     log.info("Next cycle in %ds...", cycle_interval)
                     time.sleep(cycle_interval)
                 except KeyboardInterrupt:
@@ -597,7 +597,7 @@ def main():
                 try:
                     orchestrator.run_cycle()
                     log.info("Sleeping %ds...", config.auto_trade_cycle_ms // 1000 if hasattr(config, 'auto_trade_cycle_ms') else 60)
-                    time.sleep(60)
+                    time.sleep(300)  # 5 min cycle
                 except KeyboardInterrupt:
                     log.info("Paper trading stopped")
                     break

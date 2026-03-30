@@ -119,8 +119,15 @@ class RiskManager:
                 approved=False, reason=f"Low confidence ({signal.confidence:.2f})",
             )
 
-        # Minimum risk/reward check
+        # Minimum risk/reward check — reject below 1.0, reduce size below 1.5
         if risk_reward < 1.0:
+            return RiskAssessment(
+                max_position_size=max_size, recommended_size=0,
+                stop_loss_price=stop_loss, take_profit_price=take_profit,
+                risk_reward_ratio=risk_reward, kelly_fraction=kelly,
+                approved=False, reason=f"R:R too low ({risk_reward:.2f} < 1.0)",
+            )
+        if risk_reward < 1.5:
             recommended = recommended * 0.5
 
         # --- Margin check ---
