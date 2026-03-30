@@ -224,6 +224,10 @@ class QuantEngine:
         self.vol_window = vol_window
         self.max_history = max_history
 
+        # Per-pair optimized params (loaded from zscore_optimizer results)
+        self._pair_params: dict[str, dict] = {}  # symbol → {z_fast, z_slow, entry, exit}
+        self._load_optimized_params()
+
         # Rolling state per asset
         self._closes: dict[str, list[float]] = {}
         self._highs: dict[str, list[float]] = {}
@@ -233,7 +237,7 @@ class QuantEngine:
         self._pair_snapshots: dict[str, PairSnapshot] = {}
         self._alerts: list[QuantAlert] = []
 
-        # Config
+        # Config (defaults — overridden per pair if optimized)
         self.z_alert_threshold = 2.0        # Alert when |z| > 2
         self.z_trade_threshold = 2.5        # Strong trade signal when |z| > 2.5
         self.divergence_threshold = 0.3     # RSI-price divergence
@@ -243,8 +247,42 @@ class QuantEngine:
         self._tick_count = 0
         self._last_tick = 0
 
-        log.info("QuantEngine initialised (fast=%d, slow=%d, vol=%d)",
-                 z_fast_window, z_slow_window, vol_window)
+        log.info("QuantEngine initialised (fast=%d, slow=%d, vol=%d, optimized_pairs=%d)",
+                 z_fast_window, z_slow_window, vol_window, len(self._pair_params))
+
+    def _load_optimized_params(self) -> None:
+        """Load per-pair optimized z-score params from disk (if available)."""
+        try:
+            from team.quant_engine.zscore_optimizer import ZScoreOptimizer
+            optimizer = ZScoreOptimizer()
+            params = optimizer.load_params()
+            for sym, p in params.items():
+                if p.confidence_score >= 0.2:  # Only use if reasonably confident
+                    self._pair_params[sym] = {
+                        "z_fast": p.z_fast_window,
+                        "z_slow": p.z_slow_window,
+                        "entry": p.entry_threshold,
+                        "exit": p.exit_threshold,
+                        "confidence": p.confidence_score,
+                        "regime": p.regime,
+                    }
+            if self._pair_params:
+                log.info("Loaded optimized z-score params for %d pairs", len(self._pair_params))
+        except Exception as e:
+            log.debug("No optimized z-score params available: %s", e)
+
+    def _get_pair_params(self, symbol: str) -> dict:
+        """Get z-score params for a symbol (optimized or default)."""
+        if symbol in self._pair_params:
+            return self._pair_params[symbol]
+        return {
+            "z_fast": self.z_fast_window,
+            "z_slow": self.z_slow_window,
+            "entry": self.z_trade_threshold,
+            "exit": 0.5,
+            "confidence": 0.0,
+            "regime": "unknown",
+        }
 
     # ----------------------------------------------------------------
     # Feed price data
@@ -313,19 +351,22 @@ class QuantEngine:
     def _compute_snapshot(self, symbol: str, price: float, timestamp: int) -> QuantSnapshot:
         """Compute all quant metrics for one asset."""
         closes = self._closes.get(symbol, [])
+        pp = self._get_pair_params(symbol)
+        fast_w = pp["z_fast"]
+        slow_w = pp["z_slow"]
 
-        # Z-scores
+        # Z-scores (use per-pair optimized windows)
         z_fast = _z_score(
             price,
-            _rolling_mean(closes, self.z_fast_window),
-            _rolling_std(closes, self.z_fast_window),
-        ) if len(closes) >= self.z_fast_window else 0.0
+            _rolling_mean(closes, fast_w),
+            _rolling_std(closes, fast_w),
+        ) if len(closes) >= fast_w else 0.0
 
         z_slow = _z_score(
             price,
-            _rolling_mean(closes, self.z_slow_window),
-            _rolling_std(closes, self.z_slow_window),
-        ) if len(closes) >= self.z_slow_window else 0.0
+            _rolling_mean(closes, slow_w),
+            _rolling_std(closes, slow_w),
+        ) if len(closes) >= slow_w else 0.0
 
         # RSI
         rsi_val = _rsi(closes) if len(closes) >= 15 else 50.0
@@ -554,16 +595,23 @@ class QuantEngine:
     # ----------------------------------------------------------------
 
     def generate_signals(self, asset: AssetInfo) -> list[Signal]:
-        """Generate trading signals from current quant state."""
+        """Generate trading signals from current quant state.
+
+        Uses per-pair optimized thresholds if available (from zscore_optimizer).
+        """
         snap = self._snapshots.get(asset.symbol)
         if not snap:
             return []
 
         signals = []
         now = int(time.time() * 1000)
+        pp = self._get_pair_params(asset.symbol)
+        entry_t = pp["entry"]
+        exit_t = pp["exit"]
+        opt_conf = pp["confidence"]  # Optimizer's confidence in this pair
 
-        # 1. Z-score mean reversion signal
-        if abs(snap.z_score) > self.z_trade_threshold and snap.hurst < 0.5:
+        # 1. Z-score mean reversion signal (per-pair optimized threshold)
+        if abs(snap.z_score) > entry_t and snap.hurst < 0.5:
             # Mean-reverting regime + extreme z-score → fade it
             action = SignalAction.BUY if snap.z_score < 0 else SignalAction.SELL
             conf = min(0.85, abs(snap.z_score) / 4)
@@ -571,12 +619,19 @@ class QuantEngine:
             if (snap.z_score_fast < 0 and snap.z_score_slow < 0) or \
                (snap.z_score_fast > 0 and snap.z_score_slow > 0):
                 conf += 0.05
+            # Boost from optimizer confidence
+            if opt_conf > 0.4:
+                conf += 0.05
+            if opt_conf > 0.6:
+                conf += 0.05
+            conf = min(0.90, conf)
             signals.append(Signal(
                 asset=asset, action=action, confidence=conf, price=snap.price,
                 timestamp=now, strategy="quant-z-score", timeframe="tick",
                 indicators={"z_score": snap.z_score, "z_fast": snap.z_score_fast,
-                             "z_slow": snap.z_score_slow, "hurst": snap.hurst},
-                reason=f"Z-score={snap.z_score:.2f} in mean-reverting regime (H={snap.hurst:.2f})",
+                             "z_slow": snap.z_score_slow, "hurst": snap.hurst,
+                             "entry_threshold": entry_t, "opt_confidence": opt_conf},
+                reason=f"Z={snap.z_score:.2f} > {entry_t:.2f} thresh, H={snap.hurst:.2f}, opt_conf={opt_conf:.2f}",
             ))
 
         # 2. RSI divergence signal

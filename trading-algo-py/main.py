@@ -637,6 +637,29 @@ def main():
                 mc_var = monte_carlo_var(rets)
                 print(f"  {sym:15s}: VaR95={var95*100:+.2f}%  CVaR95={cvar95*100:+.2f}%  Sortino={sortino:.2f}  MC-VaR={mc_var*100:+.2f}%")
 
+        elif cmd == "optimize-zscore":
+            # Backtest all forex pairs to find optimal z-score params
+            from team.quant_engine.zscore_optimizer import ZScoreOptimizer
+            optimizer = ZScoreOptimizer()
+            target = FOREX_ASSETS
+            if len(sys.argv) > 2:
+                # Filter to specific pair(s): python main.py optimize-zscore EUR/USD GBP/USD
+                symbols = set(sys.argv[2:])
+                target = [a for a in FOREX_ASSETS if a.symbol in symbols]
+                if not target:
+                    print(f"No matching pairs. Available: {', '.join(a.symbol for a in FOREX_ASSETS)}")
+                    return
+            print(f"\nOptimizing z-score params for {len(target)} forex pairs...")
+            print("Using scipy (ADF, Shapiro-Wilk, Ljung-Box) + statsmodels + bootstrap CI\n")
+            candles_map = {}
+            for asset in target:
+                data = orchestrator.analyst.fetch_market_data(asset, config.default_timeframe)
+                if data and data.candles:
+                    candles_map[asset.symbol] = data.candles
+                    print(f"  {asset.symbol}: {len(data.candles)} candles loaded")
+            report = optimizer.optimize_all(target, candles_map)
+            print(ZScoreOptimizer.format_report(report))
+
         elif cmd == "quant-dashboard":
             # Run quant engine on all assets and show dashboard
             from team.quant_engine import QuantEngine
@@ -677,7 +700,7 @@ def main():
             print(f"Unknown command: {cmd}")
             print("Commands: trade, backtest, paper-trade, evolve, analyze, auto-select, regime, macro,")
             print("          sentiment, diagnose, opportunities, walk-forward, hrp, risk-report,")
-            print("          quant-dashboard, stat-arb, update, version")
+            print("          optimize-zscore, quant-dashboard, stat-arb, update, version")
     else:
         # Default: CEO-driven single cycle
         orchestrator.start_ceo()
