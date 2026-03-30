@@ -168,6 +168,44 @@ class PaperTrader:
 
         return closed
 
+    def partial_close(self, pos: Position, close_pct: float, price: float) -> None:
+        """Partially close a position by reducing its quantity.
+
+        Args:
+            pos: The position to partially close
+            close_pct: Fraction to close (0-1), e.g. 0.5 = close 50%
+            price: Current price for PnL calculation
+        """
+        if pos.status != PositionStatus.OPEN or close_pct <= 0 or close_pct >= 1:
+            return
+
+        close_qty = pos.quantity * close_pct
+        remaining_qty = pos.quantity - close_qty
+
+        # Calculate PnL on the closed portion
+        if pos.side == Side.BUY:
+            partial_pnl = (price - pos.entry_price) * close_qty
+        else:
+            partial_pnl = (pos.entry_price - price) * close_qty
+
+        commission = price * close_qty * self.commission
+        partial_pnl -= commission
+
+        # Release proportional margin
+        margin_released = pos.margin_required * close_pct
+        pos.margin_required -= margin_released
+        self.available_capital += margin_released + partial_pnl
+
+        # Update position quantity
+        pos.quantity = remaining_qty
+        pos.notional_value = pos.current_price * remaining_qty
+        pos.realized_pnl += partial_pnl
+
+        event_bus.emit("position:partial_close", pos, "PaperTrader")
+        log.info("Partial close %s %s: %.0f%% (%.4f units) @ %.5f, PnL=%.2f",
+                 pos.side.value, pos.asset.symbol, close_pct * 100,
+                 close_qty, price, partial_pnl)
+
     def _close_position(self, pos: Position, price: float, reason: str) -> None:
         """Close a position at the given price."""
         pos.current_price = price

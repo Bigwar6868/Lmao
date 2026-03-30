@@ -35,6 +35,8 @@ from team.risk_manager.advanced_risk import (
     DrawdownCircuitBreaker, CorrelationAdjustedSizer,
 )
 from team.ml_signals import MLSignalEnhancer
+from team.risk_manager.journal import PostTradeReviewer
+from shared.indicators import atr as calc_atr
 
 # Configure logging
 logging.basicConfig(
@@ -262,6 +264,9 @@ class TradingOrchestrator:
         self.ceo.set_active_assets(ALL_ASSETS)
         self.ceo.set_active_strategies([s.config.name for s in self.strategies])
 
+        # Post-trade reviewer — syncs closed trades and updates agent performance
+        self.post_trade_reviewer = PostTradeReviewer()
+
         status = self.spawner.get_status()
         log.info(
             "CEO system online | %d agents | %d brains | %d loops | provider=%s",
@@ -353,17 +358,59 @@ class TradingOrchestrator:
             extra_signals=quant_signals,
         ) if trading else {}
 
-        # --- Step 7: Update prices for stop checks ---
+        # --- Step 7: Update prices + compute ATR for advanced stop management ---
         prices = {}
+        atr_map = {}
         for data in market_data_map.values():
             if data.candles:
                 prices[data.asset.symbol] = data.candles[-1].close
+                atr_vals = calc_atr(data.candles, 14)
+                if atr_vals and atr_vals[-1] is not None:
+                    atr_map[data.asset.symbol] = atr_vals[-1]
         if trading:
-            trading.check_stops(prices)
+            trading.check_stops(prices, atr_map=atr_map)
 
-        # --- Step 8: Update CEO context ---
+        # --- Step 7.5: Post-trade review — sync closed trades, update agent performance ---
+        if hasattr(self, "post_trade_reviewer") and self.spawner:
+            reviewer = self.post_trade_reviewer
+
+            # Register any new trades for agent attribution
+            if trading and trading.executor.paper.positions:
+                for pos in trading.executor.paper.positions:
+                    # Try to find which agent opened this trade from recent agent_hits
+                    reviewer.register_trade(pos.id, trade_result.get("agent_hits", {}).get(pos.strategy, "unknown"))
+
+            # Sync closed trades
+            if self.executor.mode == "live":
+                try:
+                    closed_trades = reviewer.sync_closed_trades(self.executor)
+                except Exception as e:
+                    log.debug("Live trade sync: %s", e)
+                    closed_trades = []
+            else:
+                closed_trades = reviewer.sync_paper_closed(self.executor.paper)
+
+            # Update agent reputation based on closed trade results
+            if closed_trades:
+                updated = reviewer.update_agent_performance(closed_trades, self.spawner)
+                if updated > 0:
+                    log.info("Post-trade review: %d trades synced, %d agents updated", len(closed_trades), updated)
+
+                # Update filter engine with closed trade PnL
+                if trading:
+                    for trade in closed_trades:
+                        trading.filter_engine.on_trade_closed(
+                            trade.get("instrument", ""),
+                            trade.get("pnl", 0),
+                        )
+
+        # --- Step 8: Update CEO context + equity trackers ---
         portfolio = trading.get_portfolio() if trading else self.executor.get_portfolio()
         self.ceo.update_context(portfolio)
+
+        # Update filter equity trackers
+        if trading:
+            trading.filter_engine.on_cycle_end(portfolio.capital)
 
         # --- Step 9: Risk team alert ---
         pnl_pct = (portfolio.total_pnl / max(1, portfolio.capital)) * 100
@@ -397,6 +444,13 @@ class TradingOrchestrator:
         if quant and cycle % 5 == 0:
             dashboard = quant.get_dashboard()
             log.info(dashboard)
+
+        # Log execution quality and filter stats
+        if trading:
+            exec_report = trading.executor.quality_monitor.format_report()
+            filter_status = trading.filter_engine.format_status(portfolio)
+            log.info(exec_report)
+            log.info(filter_status)
 
         # Log top contributing agents
         agent_hits = trade_result.get("agent_hits", {})

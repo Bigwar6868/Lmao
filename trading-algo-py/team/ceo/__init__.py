@@ -340,9 +340,13 @@ class TradingTeam(TeamBase):
         super().__init__("trading", "Trading Team", network, ceo_id)
         from team.executor.executor import Executor
         from team.risk_manager.risk import RiskManager
+        from team.risk_manager.filters import TradeFilterEngine
+        from team.risk_manager.stops import AdvancedStopManager
 
         self.executor = Executor()
         self.risk_manager = RiskManager()
+        self.filter_engine = TradeFilterEngine()
+        self.stop_manager = AdvancedStopManager()
         self._agents: list[TradingAgent] = []
         self._trade_count = 0
 
@@ -359,8 +363,40 @@ class TradingTeam(TeamBase):
     def update_prices(self, prices: dict[str, float]) -> None:
         pass  # Price updates handled in check_stops
 
-    def check_stops(self, prices: dict[str, float]) -> None:
-        self.executor.check_stops(prices)
+    def check_stops(self, prices: dict[str, float], atr_map: dict[str, float] | None = None) -> None:
+        """Check SL/TP and advanced stops (trailing, break-even, partial close)."""
+        # Standard stop check (SL/TP hits)
+        closed = self.executor.check_stops(prices)
+
+        # Notify filter engine about closed trades
+        for pos in closed:
+            self.filter_engine.on_trade_closed(pos.asset.symbol, pos.realized_pnl)
+            self.stop_manager.on_position_closed(pos.id)
+
+        # Advanced stop management (trailing, break-even, partial close)
+        if atr_map and self.executor.mode != "live":
+            paper = self.executor.paper
+            open_positions = [p for p in paper.positions if p.status == PositionStatus.OPEN]
+            updates = self.stop_manager.check_all(open_positions, atr_map)
+            for update in updates:
+                pos = next((p for p in open_positions if p.id == update.position_id), None)
+                if not pos:
+                    continue
+
+                # Apply partial close
+                if update.partial_close_pct > 0:
+                    paper.partial_close(pos, update.partial_close_pct, update.partial_close_price)
+                    log.info("Partial close: %s %s %.0f%% @ %.5f",
+                             pos.side.value, pos.asset.symbol,
+                             update.partial_close_pct * 100, update.partial_close_price)
+
+                # Apply new stop loss
+                if update.new_stop_loss is not None:
+                    old_sl = pos.stop_loss
+                    pos.stop_loss = update.new_stop_loss
+                    log.info("Stop update: %s %s SL %.5f → %.5f (%s)",
+                             pos.side.value, pos.asset.symbol,
+                             old_sl or 0, update.new_stop_loss, update.reason)
 
     def run_cycle(
         self,
@@ -440,19 +476,26 @@ class TradingTeam(TeamBase):
                 rejected += 1
                 continue
 
+            # Pre-trade filters (session, spread, cooldown, daily loss, correlation, etc.)
+            filter_ok, filter_mult, filter_reason = self.filter_engine.check(signal, portfolio)
+            if not filter_ok:
+                log.debug("Filter blocked %s %s: %s", signal.action.value, signal.asset.symbol, filter_reason)
+                rejected += 1
+                continue
+
             risk = self.risk_manager.assess(signal, mkt_data, portfolio)
             if risk.approved:
-                # Scale position by CEO mode
-                risk.recommended_size *= size_multiplier
-                self.executor.execute(signal, risk)
+                # Scale position by CEO mode + filter multiplier (equity curve, recovery)
+                risk.recommended_size *= size_multiplier * filter_mult
+                result = self.executor.execute(signal, risk)
                 executed += 1
                 portfolio = self.executor.get_portfolio()
                 source_name = agent.name if agent else "quant-engine"
                 agent_hits[source_name] = agent_hits.get(source_name, 0) + 1
                 log.info(
-                    "TRADE: %s %s @ %.5f (conf=%.2f, agent=%s, mode=%s)",
+                    "TRADE: %s %s @ %.5f (conf=%.2f, agent=%s, mode=%s, filter_mult=%.2f)",
                     signal.action.value, signal.asset.symbol, signal.price,
-                    signal.confidence, source_name, risk_mode,
+                    signal.confidence, source_name, risk_mode, filter_mult,
                 )
             else:
                 rejected += 1
