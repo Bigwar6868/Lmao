@@ -136,55 +136,230 @@ class CEOAgent:
         return self._rule_based_think(question, context)
 
     def _llm_think(self, question: str, context: dict | None = None) -> dict:
-        """Use Ollama/MiniMax for reasoning."""
+        """Use LLM provider (KimiClaw, Ollama, Claude, OpenAI, etc.) for reasoning."""
         try:
+            import asyncio
             import httpx
+
             system_prompt = (
-                "You are the CEO of a multi-asset trading system. You oversee 5 teams: "
-                "Trading, Research, Risk, Evolution, Ops. Make strategic decisions about "
-                "risk, team focus, and capital allocation. Be decisive."
+                "You are the CEO of a multi-asset trading system. You oversee 6 teams: "
+                "Trading (12 agents), Research, Risk, Evolution, Quant, Ops. "
+                "Make strategic decisions about risk, team focus, and capital allocation. "
+                "Be decisive and concise."
             )
             user_prompt = f"Question: {question}"
             if self._last_portfolio:
                 p = self._last_portfolio
-                user_prompt += f"\nPortfolio: Capital=${p.capital:.2f}, PnL=${p.total_pnl:.2f}, Positions={len([x for x in p.positions if x.status == PositionStatus.OPEN])}"
+                open_pos = [x for x in p.positions if x.status == PositionStatus.OPEN]
+                user_prompt += (
+                    f"\nPortfolio: Capital=${p.capital:.2f}, PnL=${p.total_pnl:.2f} ({p.total_pnl_pct:+.1f}%), "
+                    f"Open={len(open_pos)}, Margin={p.margin_used:.2f}/{p.margin_available:.2f}, "
+                    f"Leverage={p.total_leverage:.1f}x, MaxDD=${p.max_drawdown:.2f}"
+                )
             if context:
                 user_prompt += f"\nContext: {context}"
             user_prompt += "\nRespond: DECISION: [your decision]\nCONFIDENCE: [0-100]%"
 
-            endpoint = getattr(self._llm_provider, 'endpoint', 'http://localhost:11434')
-            model = getattr(self._llm_provider, 'model', 'MiniMax-M1-80k')
+            content = self._call_provider(system_prompt, user_prompt)
 
-            with httpx.Client(timeout=60) as client:
-                resp = client.post(f"{endpoint}/api/chat", json={
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    "stream": False,
-                    "options": {"temperature": 0.3},
-                })
-                resp.raise_for_status()
-                content = resp.json().get("message", {}).get("content", "")
+            decision = content
+            confidence = 0.5
+            for line in content.split("\n"):
+                if line.strip().upper().startswith("DECISION:"):
+                    decision = line.split(":", 1)[1].strip()
+                if line.strip().upper().startswith("CONFIDENCE:"):
+                    try:
+                        confidence = int(line.split(":", 1)[1].strip().replace("%", "")) / 100
+                    except ValueError:
+                        pass
 
-                decision = content
-                confidence = 0.5
-                for line in content.split("\n"):
-                    if line.strip().upper().startswith("DECISION:"):
-                        decision = line.split(":", 1)[1].strip()
-                    if line.strip().upper().startswith("CONFIDENCE:"):
-                        try:
-                            confidence = int(line.split(":", 1)[1].strip().replace("%", "")) / 100
-                        except ValueError:
-                            pass
-
-                self._last_thought = {"decision": decision, "confidence": confidence, "used_ai": True}
-                return self._last_thought
+            self._last_thought = {"decision": decision, "confidence": confidence, "used_ai": True}
+            return self._last_thought
 
         except Exception as e:
             log.warning("CEO LLM think failed: %s — using rule-based", e)
             return self._rule_based_think(question, context)
+
+    def _call_provider(self, system_prompt: str, user_prompt: str) -> str:
+        """Call whatever LLM provider is configured (KimiClaw, Ollama, Claude, OpenAI).
+
+        Handles both async providers (KimiClaw, OpenAI) and Ollama's native format.
+        """
+        import asyncio
+        import httpx
+
+        provider = self._llm_provider
+        provider_name = getattr(provider, "name", "unknown")
+
+        # If provider has an async query() method (KimiClaw, OpenAI, Claude, DeepSeek)
+        if hasattr(provider, "query"):
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+
+            if loop and loop.is_running():
+                # Already in async context — run in thread
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    future = pool.submit(asyncio.run, provider.query(system_prompt, user_prompt))
+                    return future.result(timeout=60)
+            else:
+                return asyncio.run(provider.query(system_prompt, user_prompt))
+
+        # Fallback: Ollama native /api/chat format
+        endpoint = getattr(provider, 'endpoint', 'http://localhost:11434')
+        model = getattr(provider, 'model', 'llama3')
+
+        with httpx.Client(timeout=60) as client:
+            resp = client.post(f"{endpoint}/api/chat", json={
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "stream": False,
+                "options": {"temperature": 0.3},
+            })
+            resp.raise_for_status()
+            return resp.json().get("message", {}).get("content", "")
+
+    def think_about_trades(self, open_positions: list, prices: dict[str, float],
+                           agent_trades: dict[str, list] | None = None) -> list[dict]:
+        """CEO reviews all open positions and decides: hold, tighten, or close.
+
+        Returns list of trade decisions:
+          {"position_id": ..., "action": "hold|tighten|close", "reason": ..., ...}
+        """
+        if not open_positions:
+            return []
+
+        # Build position summary for the CEO
+        from shared.types import Side
+        pos_lines = []
+        for pos in open_positions:
+            price = prices.get(pos.asset.symbol, pos.current_price)
+            if pos.side == Side.BUY:
+                pnl = (price - pos.entry_price) * pos.quantity
+                pnl_pct = ((price - pos.entry_price) / pos.entry_price) * 100
+            else:
+                pnl = (pos.entry_price - price) * pos.quantity
+                pnl_pct = ((pos.entry_price - price) / pos.entry_price) * 100
+
+            owning_agent = "unknown"
+            if agent_trades:
+                for agent_name, trade_ids in agent_trades.items():
+                    if pos.id in trade_ids:
+                        owning_agent = agent_name
+                        break
+
+            pos_lines.append(
+                f"  {pos.id[:8]} | {pos.side.value:4s} {pos.asset.symbol:<12s} | "
+                f"entry={pos.entry_price:.5f} now={price:.5f} | "
+                f"PnL=${pnl:+.2f} ({pnl_pct:+.2f}%) | "
+                f"SL={pos.stop_loss or 0:.5f} TP={pos.take_profit or 0:.5f} | "
+                f"agent={owning_agent}"
+            )
+
+        if not self._llm_provider:
+            return self._rule_based_trade_review(open_positions, prices)
+
+        system_prompt = (
+            "You are the CEO of a live trading system. Review each open position and decide:\n"
+            "- HOLD: trade is progressing well, keep it\n"
+            "- TIGHTEN: move stop loss closer (specify new SL price)\n"
+            "- CLOSE: close the position now (specify reason)\n\n"
+            "Rules:\n"
+            "- Close trades losing >2% immediately\n"
+            "- Tighten stop if profit gave back >50% from peak\n"
+            "- Close stale trades that aren't moving\n"
+            "- Never let a winner turn into a big loser\n\n"
+            "For each position respond with exactly one line:\n"
+            "POSITION_ID ACTION [NEW_SL] REASON\n"
+            "Example: abc12345 CLOSE Signal reversed\n"
+            "Example: def67890 TIGHTEN 1.10500 Lock in profit\n"
+            "Example: ghi11111 HOLD On track"
+        )
+
+        user_prompt = f"Open positions ({len(open_positions)}):\n" + "\n".join(pos_lines)
+        if self._last_portfolio:
+            p = self._last_portfolio
+            user_prompt += f"\n\nPortfolio: ${p.capital:.2f} | PnL: ${p.total_pnl:+.2f} | MaxDD: ${p.max_drawdown:.2f}"
+
+        try:
+            content = self._call_provider(system_prompt, user_prompt)
+            return self._parse_trade_decisions(content, open_positions)
+        except Exception as e:
+            log.warning("CEO trade review failed: %s — using rules", e)
+            return self._rule_based_trade_review(open_positions, prices)
+
+    def _parse_trade_decisions(self, content: str, positions: list) -> list[dict]:
+        """Parse LLM response into trade decisions."""
+        decisions = []
+        pos_map = {p.id[:8]: p for p in positions}
+
+        for line in content.strip().split("\n"):
+            line = line.strip()
+            if not line or line.startswith("#") or line.startswith("-"):
+                continue
+
+            parts = line.split(None, 2)
+            if len(parts) < 2:
+                continue
+
+            pos_prefix = parts[0].strip()
+            action = parts[1].strip().upper()
+            rest = parts[2] if len(parts) > 2 else ""
+
+            # Match position by ID prefix
+            pos = pos_map.get(pos_prefix)
+            if not pos:
+                # Try fuzzy match
+                for prefix, p in pos_map.items():
+                    if prefix.startswith(pos_prefix[:4]):
+                        pos = p
+                        break
+            if not pos:
+                continue
+
+            decision = {
+                "position_id": pos.id,
+                "symbol": pos.asset.symbol,
+                "action": action.lower() if action in ("HOLD", "TIGHTEN", "CLOSE") else "hold",
+                "reason": rest,
+            }
+
+            if action == "TIGHTEN":
+                # Try to extract new SL from the rest
+                try:
+                    new_sl_str = rest.split()[0]
+                    decision["new_stop_loss"] = float(new_sl_str)
+                    decision["reason"] = " ".join(rest.split()[1:])
+                except (ValueError, IndexError):
+                    pass
+
+            decisions.append(decision)
+
+        return decisions
+
+    def _rule_based_trade_review(self, positions: list, prices: dict[str, float]) -> list[dict]:
+        """Rule-based trade review when LLM is unavailable."""
+        from shared.types import Side
+        decisions = []
+        for pos in positions:
+            price = prices.get(pos.asset.symbol, pos.current_price)
+            if pos.side == Side.BUY:
+                pnl_pct = ((price - pos.entry_price) / pos.entry_price) * 100
+            else:
+                pnl_pct = ((pos.entry_price - price) / pos.entry_price) * 100
+
+            if pnl_pct < -2.0:
+                decisions.append({"position_id": pos.id, "symbol": pos.asset.symbol,
+                                  "action": "close", "reason": f"Loss {pnl_pct:.2f}% exceeds limit"})
+            else:
+                decisions.append({"position_id": pos.id, "symbol": pos.asset.symbol,
+                                  "action": "hold", "reason": f"PnL {pnl_pct:+.2f}%"})
+        return decisions
 
     def _rule_based_think(self, question: str, context: dict | None = None) -> dict:
         """Simple rule-based reasoning fallback."""
@@ -349,6 +524,11 @@ class TradingTeam(TeamBase):
         self.stop_manager = AdvancedStopManager()
         self._agents: list[TradingAgent] = []
         self._trade_count = 0
+        self._ceo: CEOAgent | None = None  # Set after CEO is created
+
+    def set_ceo(self, ceo: CEOAgent) -> None:
+        """Give trading team a reference to the CEO for trade monitoring."""
+        self._ceo = ceo
 
     def register_agent(self, agent: TradingAgent) -> None:
         self._agents.append(agent)
@@ -377,8 +557,62 @@ class TradingTeam(TeamBase):
             for agent in self._agents:
                 agent.on_trade_closed(pos.id)
 
-        # --- Agent trade monitoring ---
-        # Each agent reviews its open positions and recommends actions
+        # --- CEO trade monitoring ---
+        # CEO reviews all open positions and decides: hold, tighten, or close
+        if self._ceo:
+            open_positions = []
+            if self.executor.mode != "live":
+                open_positions = [p for p in self.executor.paper.positions if p.status == PositionStatus.OPEN]
+            else:
+                try:
+                    portfolio = self.executor.get_portfolio()
+                    open_positions = [p for p in portfolio.positions if p.status == PositionStatus.OPEN]
+                except Exception:
+                    pass
+
+            if open_positions:
+                # Build agent ownership map
+                agent_trade_map: dict[str, list[str]] = {}
+                for agent in self._agents:
+                    for trade in agent.get_active_trades():
+                        agent_trade_map.setdefault(agent.name, []).append(trade.position_id)
+
+                # CEO reviews positions
+                decisions = self._ceo.think_about_trades(open_positions, prices, agent_trade_map)
+
+                for decision in decisions:
+                    if decision["action"] == "hold":
+                        continue
+
+                    pos_id = decision["position_id"]
+
+                    if decision["action"] == "tighten" and "new_stop_loss" in decision:
+                        if self.executor.mode != "live":
+                            for pos in self.executor.paper.positions:
+                                if pos.id == pos_id and pos.status == PositionStatus.OPEN:
+                                    old_sl = pos.stop_loss
+                                    pos.stop_loss = decision["new_stop_loss"]
+                                    log.info("CEO tightened SL: %s %s %.5f → %.5f (%s)",
+                                             pos.side.value, pos.asset.symbol,
+                                             old_sl or 0, decision["new_stop_loss"], decision["reason"])
+                                    break
+
+                    elif decision["action"] == "close":
+                        if self.executor.mode != "live":
+                            for pos in self.executor.paper.positions:
+                                if pos.id == pos_id and pos.status == PositionStatus.OPEN:
+                                    price = prices.get(pos.asset.symbol, pos.current_price)
+                                    self.executor.paper._close_position(pos, price, f"ceo:{decision['reason']}")
+                                    # Notify owning agent
+                                    for agent in self._agents:
+                                        agent.on_trade_closed(pos_id)
+                                    self.filter_engine.on_trade_closed(pos.asset.symbol, pos.realized_pnl)
+                                    log.info("CEO closed %s %s: %s (PnL=%.2f)",
+                                             pos.side.value, pos.asset.symbol,
+                                             decision["reason"], pos.realized_pnl)
+                                    break
+
+        # --- Agent trade monitoring (secondary — agents also watch their own trades) ---
         for agent in self._agents:
             if agent.status == "retired" or not agent.get_active_trades():
                 continue
@@ -391,7 +625,6 @@ class TradingTeam(TeamBase):
                 pos_id = action["position_id"]
 
                 if action["action"] == "tighten" and "new_stop_loss" in action:
-                    # Agent wants to tighten stop — apply if paper mode
                     if self.executor.mode != "live":
                         for pos in self.executor.paper.positions:
                             if pos.id == pos_id and pos.status == PositionStatus.OPEN:
@@ -403,7 +636,6 @@ class TradingTeam(TeamBase):
                                 break
 
                 elif action["action"] == "close":
-                    # Agent recommends closing — execute close
                     if self.executor.mode != "live":
                         for pos in self.executor.paper.positions:
                             if pos.id == pos_id and pos.status == PositionStatus.OPEN:

@@ -201,6 +201,7 @@ class TradingOrchestrator:
 
         # Create teams
         trading_team = TradingTeam(self.network, self.ceo.id)
+        trading_team.set_ceo(self.ceo)  # CEO monitors trades
         research_team = ResearchTeam(self.network, self.ceo.id)
         risk_team = RiskTeam(self.network, self.ceo.id)
         evolution_team = EvolutionTeam(self.network, self.ceo.id)
