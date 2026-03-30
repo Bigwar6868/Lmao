@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from shared.types import Signal, RiskAssessment, Order, Portfolio
+from shared.types import Signal, RiskAssessment, Order, Portfolio, AssetClass
 from team.executor.paper import PaperTrader
 from config.settings import config
 
@@ -54,8 +54,23 @@ class Executor:
         return self._live
 
     def execute(self, signal: Signal, risk: RiskAssessment) -> dict:
-        """Execute a trade via the configured engine. Falls back to paper if live fails."""
+        """Execute a trade via the configured engine.
+
+        Routing:
+        - OANDA: only forex pairs (OANDA doesn't support crypto)
+        - Crypto: always paper trade (no live crypto exchange connected)
+        - Falls back to paper if live execution fails
+        """
         if self.mode == "live":
+            # OANDA only supports forex — route crypto to paper
+            is_forex = signal.asset.asset_class == AssetClass.FOREX
+            broker = getattr(config, "trading_broker", "auto")
+            is_oanda = broker == "oanda" or (broker == "auto" and getattr(config, "has_oanda_credentials", False))
+
+            if is_oanda and not is_forex:
+                log.debug("Crypto %s → paper (OANDA forex only)", signal.asset.symbol)
+                return self.paper.execute_trade(signal, risk)
+
             try:
                 executor = self._get_live()
                 order = executor.execute_order(signal, risk)

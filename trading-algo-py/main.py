@@ -442,6 +442,32 @@ class TradingOrchestrator:
 
 def main():
     """CLI entry point."""
+    # Auto-update check on startup (non-blocking, rate-limited to 1x/hour)
+    try:
+        from shared.updater import check_for_updates, auto_update, format_update_status
+        if len(sys.argv) > 1 and sys.argv[1] == "update":
+            # Explicit update command
+            print("Checking for updates...")
+            updated = auto_update(force=True)
+            if updated:
+                print("Updated! Restart the system.")
+            else:
+                info = check_for_updates(force=True)
+                print(format_update_status(info))
+            return
+
+        if len(sys.argv) > 1 and sys.argv[1] == "version":
+            from shared.updater import get_current_version, get_local_commit
+            print(f"v{get_current_version()} (commit: {get_local_commit() or '?'})")
+            return
+
+        # Background check (silent, rate-limited)
+        info = check_for_updates()
+        if info.update_available:
+            log.info("Update available! Run: python main.py update")
+    except Exception:
+        pass  # Never block startup on update check failure
+
     orchestrator = TradingOrchestrator()
 
     if len(sys.argv) > 1:
@@ -603,7 +629,8 @@ def main():
         else:
             print(f"Unknown command: {cmd}")
             print("Commands: trade, backtest, paper-trade, evolve, analyze, auto-select, regime, macro,")
-            print("          sentiment, diagnose, opportunities, walk-forward, hrp, risk-report, stat-arb")
+            print("          sentiment, diagnose, opportunities, walk-forward, hrp, risk-report, stat-arb,")
+            print("          update, version")
     else:
         # Default: CEO-driven single cycle
         orchestrator.start_ceo()
