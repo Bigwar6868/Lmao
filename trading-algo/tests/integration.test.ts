@@ -5,7 +5,7 @@ import { MomentumStrategy } from '../src/team/technical-strategist/strategies/mo
 import { MeanReversionStrategy } from '../src/team/technical-strategist/strategies/mean-reversion.js';
 import { BreakoutStrategy } from '../src/team/technical-strategist/strategies/breakout.js';
 import { MultiIndicatorStrategy } from '../src/team/technical-strategist/strategies/multi-indicator.js';
-import { PaperTrader } from '../src/team/executor/paper.js';
+import { TradeSimulator } from '../src/team/executor/simulator.js';
 import { StrategyEvolver } from '../src/team/self-improver/evolver.js';
 import { MacroEconomist } from '../src/team/macro-economist/index.js';
 import { GeopoliticalAnalyzer } from '../src/team/macro-economist/geopolitical.js';
@@ -131,7 +131,7 @@ describe('Event-Driven Flow', () => {
 // ---- Integration: Strategy → Execution ----
 
 describe('Strategy → Execution Pipeline', () => {
-  it('should execute a signal from strategy through paper trader', async () => {
+  it('should execute a signal from strategy through trade simulator', async () => {
     // Generate a BUY signal
     const strategy = new MomentumStrategy();
     const closes: number[] = [];
@@ -141,7 +141,7 @@ describe('Strategy → Execution Pipeline', () => {
     const signals = await strategy.analyze(data);
 
     if (signals.length > 0 && signals[0].action === 'BUY') {
-      const trader = new PaperTrader({ initialCapital: 10000 });
+      const trader = new TradeSimulator({ initialCapital: 10000 });
       const risk = {
         maxPositionSize: 2000,
         recommendedSize: 1000,

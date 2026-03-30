@@ -627,7 +627,7 @@ async function main() {
   }
   console.log(`Messaging: ${messageDispatcher.getTargets().map(t => t.channel).join(', ')}`);
   console.log('\nRun scripts:');
-  console.log('  npm run paper-trade  — CEO-driven multi-team paper trading');
+  console.log('  npm run live-trade   — CEO-driven multi-team live trading');
   console.log('  npm run backtest     — Backtest ALL assets');
   console.log('  npm run analyze      — Analyze ALL markets');
   console.log('  npm run evolve       — Evolve strategies (internal, no API)');

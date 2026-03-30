@@ -27,10 +27,10 @@ export const config = {
   bybitSecret: process.env.BYBIT_SECRET ?? '',
   alpacaApiKey: process.env.ALPACA_API_KEY ?? '',
   alpacaSecret: process.env.ALPACA_SECRET ?? '',
-  alpacaPaper: process.env.ALPACA_PAPER !== 'false',
+  alpacaPaper: process.env.ALPACA_PAPER === 'true',
 
   // Trading
-  tradingMode: (process.env.TRADING_MODE ?? 'paper') as 'paper' | 'live',
+  tradingMode: (process.env.TRADING_MODE ?? 'live') as 'live',
   defaultTimeframe: process.env.DEFAULT_TIMEFRAME ?? '1h',
   initialCapital: Number(process.env.INITIAL_CAPITAL ?? 10000),
   maxPositionSizePct: Number(process.env.MAX_POSITION_SIZE_PCT ?? 5),

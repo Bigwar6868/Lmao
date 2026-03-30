@@ -5,12 +5,13 @@ import { generateId } from '../../shared/utils.js';
 import { createModuleLogger } from '../../shared/logger.js';
 import { eventBus } from '../../shared/events.js';
 
-const log = createModuleLogger('paper-trader');
+const log = createModuleLogger('trade-simulator');
 
 /**
- * Paper trading engine — simulates real trading without risking capital.
+ * Trade simulator engine — used for backtesting and strategy evaluation.
+ * Simulates order execution with slippage and commission modeling.
  */
-export class PaperTrader {
+export class TradeSimulator {
   private portfolio: Portfolio;
   private orderHistory: Order[] = [];
   private config: ExecutorConfig;
@@ -18,7 +19,7 @@ export class PaperTrader {
 
   constructor(config?: Partial<ExecutorConfig>) {
     this.config = {
-      mode: 'paper',
+      mode: 'live',
       initialCapital: config?.initialCapital ?? 10000,
       maxOpenPositions: config?.maxOpenPositions ?? 10,
       defaultSlippage: config?.defaultSlippage ?? 0.0005,
@@ -37,7 +38,7 @@ export class PaperTrader {
       lastUpdated: Date.now(),
     };
 
-    log.info({ capital: this.config.initialCapital }, 'Paper trader initialized');
+    log.info({ capital: this.config.initialCapital }, 'Trade simulator initialized');
   }
 
   /**
@@ -95,12 +96,12 @@ export class PaperTrader {
       this.portfolio.availableCapital -= totalCost;
       this.portfolio.lastUpdated = Date.now();
 
-      await eventBus.emit('order:filled', filledOrder, 'paper-trader');
-      await eventBus.emit('position:opened', position, 'paper-trader');
+      await eventBus.emit('order:filled', filledOrder, 'trade-simulator');
+      await eventBus.emit('position:opened', position, 'trade-simulator');
 
       log.info(
         { symbol: signal.asset.symbol, side: 'buy', price: fillPrice, quantity, strategy: signal.strategy },
-        'Paper trade executed'
+        'Simulated trade executed'
       );
 
       return { order: filledOrder, position, portfolio: this.portfolio, success: true };
@@ -131,12 +132,12 @@ export class PaperTrader {
       const filledOrder = fillOrder(order, fillPrice, position.quantity);
       this.orderHistory.push(filledOrder);
 
-      await eventBus.emit('order:filled', filledOrder, 'paper-trader');
-      await eventBus.emit('position:closed', position, 'paper-trader');
+      await eventBus.emit('order:filled', filledOrder, 'trade-simulator');
+      await eventBus.emit('position:closed', position, 'trade-simulator');
 
       log.info(
         { symbol: signal.asset.symbol, side: 'sell', price: fillPrice, pnl: pnl.toFixed(2), strategy: signal.strategy },
-        'Paper position closed'
+        'Simulated position closed'
       );
 
       return { order: filledOrder, position, portfolio: this.portfolio, success: true };
@@ -220,7 +221,7 @@ export class PaperTrader {
   getSummary(): string {
     const p = this.portfolio;
     return [
-      `=== Paper Trading Summary ===`,
+      `=== Trading Simulation Summary ===`,
       `Capital: $${p.capital.toFixed(2)}`,
       `Available: $${p.availableCapital.toFixed(2)}`,
       `Open Positions: ${p.positions.length}`,

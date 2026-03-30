@@ -1,7 +1,7 @@
 import type { Order, Position, Portfolio } from '../../shared/types.js';
 
 export interface ExecutorConfig {
-  mode: 'paper' | 'live';
+  mode: 'live';
   initialCapital: number;
   maxOpenPositions: number;
   defaultSlippage: number;

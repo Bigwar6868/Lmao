@@ -10,7 +10,7 @@
     "dev": "tsx src/index.ts",
     "build": "tsc",
     "backtest": "tsx src/scripts/backtest.ts",
-    "paper-trade": "tsx src/scripts/paper-trade.ts",
+    "live-trade": "tsx src/scripts/paper-trade.ts",
     "analyze": "tsx src/scripts/analyze.ts",
     "evolve": "tsx src/scripts/evolve.ts",
     "diagnose": "tsx src/scripts/diagnose.ts",
@@ -29,7 +29,7 @@
     ],
     "scripts": [
       "dist/backtest.cjs",
-      "dist/paper-trade.cjs",
+      "dist/live-trade.cjs",
       "dist/auto-trade.cjs",
       "dist/analyze.cjs",
       "dist/evolve.cjs",

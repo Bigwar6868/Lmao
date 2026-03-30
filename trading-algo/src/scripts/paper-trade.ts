@@ -20,7 +20,7 @@ async function main() {
     default: assets = allAssets;
   }
 
-  console.log(`\n=== Paper Trading Mode ===`);
+  console.log(`\n=== Live Trading Mode ===`);
   console.log(`Timeframe: ${timeframe}, cycle interval: ${intervalMinutes} minutes`);
   console.log(`Assets (${assets.length}): ${assets.map((a) => a.symbol).join(', ')}`);
   console.log(`\n  Crypto: ${cryptoAssets.length} pairs`);
@@ -63,7 +63,7 @@ async function main() {
   // Graceful shutdown
   process.on('SIGINT', async () => {
     clearInterval(interval);
-    console.log('\n\nShutting down paper trader...');
+    console.log('\n\nShutting down live trader...');
     console.log(orchestrator.getPortfolioSummary());
     await orchestrator.shutdown();
     process.exit(0);

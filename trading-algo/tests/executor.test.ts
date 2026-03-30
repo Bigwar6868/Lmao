@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { Signal, RiskAssessment, AssetInfo } from '../src/shared/types.js';
-import { PaperTrader } from '../src/team/executor/paper.js';
+import { TradeSimulator } from '../src/team/executor/simulator.js';
 import { createOrderFromSignal, fillOrder } from '../src/team/executor/order.js';
 
 // ---- Helpers ----
@@ -67,11 +67,11 @@ describe('Order Functions', () => {
   });
 });
 
-// ---- PaperTrader ----
+// ---- TradeSimulator ----
 
-describe('PaperTrader', () => {
+describe('TradeSimulator', () => {
   it('should initialize with correct capital', () => {
-    const trader = new PaperTrader({ initialCapital: 50000 });
+    const trader = new TradeSimulator({ initialCapital: 50000 });
     const portfolio = trader.getPortfolio();
     expect(portfolio.capital).toBe(50000);
     expect(portfolio.availableCapital).toBe(50000);
@@ -79,7 +79,7 @@ describe('PaperTrader', () => {
   });
 
   it('should execute a BUY trade successfully', async () => {
-    const trader = new PaperTrader({ initialCapital: 10000 });
+    const trader = new TradeSimulator({ initialCapital: 10000 });
     const signal = makeSignal('BUY', 100);
     const risk = makeRisk(true, 1000);
     const result = await trader.executeTrade(signal, risk);
@@ -95,7 +95,7 @@ describe('PaperTrader', () => {
   });
 
   it('should reject trade when risk not approved', async () => {
-    const trader = new PaperTrader({ initialCapital: 10000 });
+    const trader = new TradeSimulator({ initialCapital: 10000 });
     const signal = makeSignal('BUY', 100);
     const risk = makeRisk(false);
     const result = await trader.executeTrade(signal, risk);
@@ -105,7 +105,7 @@ describe('PaperTrader', () => {
   });
 
   it('should reject HOLD signals', async () => {
-    const trader = new PaperTrader({ initialCapital: 10000 });
+    const trader = new TradeSimulator({ initialCapital: 10000 });
     const signal: Signal = { ...makeSignal('BUY', 100), action: 'HOLD' };
     const risk = makeRisk(true);
     const result = await trader.executeTrade(signal, risk);
@@ -115,7 +115,7 @@ describe('PaperTrader', () => {
   });
 
   it('should reject BUY when max positions reached', async () => {
-    const trader = new PaperTrader({ initialCapital: 100000, maxOpenPositions: 1 });
+    const trader = new TradeSimulator({ initialCapital: 100000, maxOpenPositions: 1 });
     const signal1 = makeSignal('BUY', 100);
     const risk = makeRisk(true, 100);
 
@@ -127,7 +127,7 @@ describe('PaperTrader', () => {
   });
 
   it('should reject BUY when insufficient capital', async () => {
-    const trader = new PaperTrader({ initialCapital: 10 });
+    const trader = new TradeSimulator({ initialCapital: 10 });
     const signal = makeSignal('BUY', 100);
     const risk = makeRisk(true, 10000);
     const result = await trader.executeTrade(signal, risk);
@@ -137,7 +137,7 @@ describe('PaperTrader', () => {
   });
 
   it('should close position on SELL', async () => {
-    const trader = new PaperTrader({ initialCapital: 10000 });
+    const trader = new TradeSimulator({ initialCapital: 10000 });
     const buySignal = makeSignal('BUY', 100);
     const risk = makeRisk(true, 1000);
 
@@ -151,7 +151,7 @@ describe('PaperTrader', () => {
   });
 
   it('should reject SELL when no position exists', async () => {
-    const trader = new PaperTrader({ initialCapital: 10000 });
+    const trader = new TradeSimulator({ initialCapital: 10000 });
     const signal = makeSignal('SELL', 100);
     const result = await trader.executeTrade(signal, makeRisk(true));
 
@@ -160,7 +160,7 @@ describe('PaperTrader', () => {
   });
 
   it('should update prices and calculate drawdown', () => {
-    const trader = new PaperTrader({ initialCapital: 10000 });
+    const trader = new TradeSimulator({ initialCapital: 10000 });
     // Execute a buy first
     const signal = makeSignal('BUY', 100);
     const risk = makeRisk(true, 5000);
@@ -176,7 +176,7 @@ describe('PaperTrader', () => {
   });
 
   it('should trigger stop loss', async () => {
-    const trader = new PaperTrader({ initialCapital: 10000 });
+    const trader = new TradeSimulator({ initialCapital: 10000 });
     const signal = makeSignal('BUY', 100);
     const risk = makeRisk(true, 1000);
     risk.stopLossPrice = 90;
@@ -193,7 +193,7 @@ describe('PaperTrader', () => {
   });
 
   it('should trigger take profit', async () => {
-    const trader = new PaperTrader({ initialCapital: 10000 });
+    const trader = new TradeSimulator({ initialCapital: 10000 });
     const signal = makeSignal('BUY', 100);
     const risk = makeRisk(true, 1000);
     risk.takeProfitPrice = 120;
@@ -208,7 +208,7 @@ describe('PaperTrader', () => {
   });
 
   it('should track order history', async () => {
-    const trader = new PaperTrader({ initialCapital: 10000 });
+    const trader = new TradeSimulator({ initialCapital: 10000 });
     const signal = makeSignal('BUY', 100);
     const risk = makeRisk(true, 1000);
 
@@ -221,9 +221,9 @@ describe('PaperTrader', () => {
   });
 
   it('should produce a summary string', () => {
-    const trader = new PaperTrader({ initialCapital: 10000 });
+    const trader = new TradeSimulator({ initialCapital: 10000 });
     const summary = trader.getSummary();
-    expect(summary).toContain('Paper Trading Summary');
+    expect(summary).toContain('Trading Simulation Summary');
     expect(summary).toContain('Capital');
   });
 });
