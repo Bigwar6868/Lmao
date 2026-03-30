@@ -356,6 +356,21 @@ class TradingOrchestrator:
             risk_mode = "conservative"
             log.warning("Risk override: conservative mode (drawdown %.1f%%)", pnl_pct)
 
+        # --- Step 3.25: Risk team monitors portfolio ---
+        risk_team = self._teams.get("risk")
+        risk_result = {}
+        if risk_team:
+            risk_result = risk_team.monitor(portfolio)
+            if risk_result.get("kill_switch"):
+                log.critical("RISK TEAM: Kill switch active — halting all trading")
+                return {"cycle": cycle, "paused": True, "risk_kill": True, "alerts": risk_result["alerts"]}
+            if risk_result.get("halt_trading"):
+                log.warning("RISK TEAM: Trading halted — %s", risk_result["alerts"])
+                risk_mode = "conservative"
+            if risk_result.get("risk_mode_override"):
+                risk_mode = risk_result["risk_mode_override"]
+                log.info("RISK TEAM: Overriding risk_mode to %s", risk_mode)
+
         log.info("CEO: %s → risk_mode=%s", ceo_decision[:60], risk_mode)
 
         # --- Step 3.5: Quant team — feed data + generate quant signals ---
@@ -368,9 +383,11 @@ class TradingOrchestrator:
                 log.info("Quant: %d signals (z-score, divergence, IRP, pair-spread)", len(quant_signals))
 
         # --- Step 4-6: Trading team — agents independently seek + execute ---
-        # (trading already set in step 3)
+        # If risk team halted trading, skip new trades but still run stops/monitoring
+        halt_new_trades = risk_result.get("halt_trading", False)
         trade_result = trading.run_cycle(
-            market_data_map, risk_mode=risk_mode, max_trades_per_cycle=20,
+            market_data_map, risk_mode=risk_mode,
+            max_trades_per_cycle=0 if halt_new_trades else 20,
             extra_signals=quant_signals,
         ) if trading else {}
 
@@ -412,6 +429,11 @@ class TradingOrchestrator:
                 if updated > 0:
                     log.info("Post-trade review: %d trades synced, %d agents updated", len(closed_trades), updated)
 
+                # Feed closed trade PnL to risk team for consecutive loss tracking
+                if risk_team:
+                    for trade in closed_trades:
+                        risk_team.on_trade_closed(trade.get("pnl", 0))
+
                 # Update filter engine with closed trade PnL
                 if trading:
                     for trade in closed_trades:
@@ -428,11 +450,12 @@ class TradingOrchestrator:
         if trading:
             trading.filter_engine.on_cycle_end(portfolio.capital)
 
-        # --- Step 9: Risk team alert ---
-        pnl_pct = (portfolio.total_pnl / max(1, portfolio.capital)) * 100
-        risk_team = self._teams.get("risk")
-        if risk_team and pnl_pct < -5:
-            risk_team.report_to_ceo("risk-alert", f"DANGER: Drawdown {pnl_pct:.1f}%")
+        # --- Step 9: Risk team post-trade check ---
+        # Risk team already ran pre-trade (Step 3.25), now re-check after trades
+        if risk_team:
+            post_risk = risk_team.monitor(portfolio)
+            if post_risk.get("alerts"):
+                log.info("Risk post-trade: %s", post_risk["alerts"])
 
         # --- Step 10: Evolution every 5 cycles ---
         if self.spawner and cycle % 5 == 0:
@@ -467,6 +490,8 @@ class TradingOrchestrator:
             filter_status = trading.filter_engine.format_status(portfolio)
             log.info(exec_report)
             log.info(filter_status)
+        if risk_team:
+            log.info(risk_team.format_report())
         if research:
             log.info(research.get_research_summary())
 

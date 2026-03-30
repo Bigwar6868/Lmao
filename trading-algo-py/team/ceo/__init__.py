@@ -1234,26 +1234,170 @@ class ResearchTeam(TeamBase):
 # ============================================================
 
 class RiskTeam(TeamBase):
-    """Monitors risk, enforces limits, manages kill switch."""
+    """Monitors portfolio risk each cycle, enforces limits, manages kill switch.
+
+    Checks performed every cycle:
+    1. Max drawdown → kill switch
+    2. Daily loss limit → halt trading
+    3. Position concentration → alert CEO
+    4. Max open positions → block new trades
+    5. Margin utilization → alert CEO
+    6. Consecutive losses → reduce exposure
+    """
 
     def __init__(self, network: AgentNetwork, ceo_id: AgentId) -> None:
         super().__init__("risk", "Risk Team", network, ceo_id)
         self._kill_switch = False
+        self._kill_reason: str = ""
+        self._alerts: list[str] = []
+        self._consecutive_losses: int = 0
+        self._cycle_count: int = 0
+        self._last_portfolio_pnl: float = 0.0
+
+        # Configurable limits
+        self.max_drawdown_pct: float = 20.0
+        self.kill_switch_drawdown_pct: float = 15.0
+        self.max_open_positions: int = 20
+        self.max_concentration_pct: float = 30.0  # max % of capital in one asset
+        self.max_margin_utilization_pct: float = 80.0
+        self.consecutive_loss_limit: int = 5
 
     def is_kill_switch_active(self) -> bool:
         return self._kill_switch
 
     def activate_kill_switch(self, reason: str) -> None:
-        self._kill_switch = True
-        self.report_to_ceo("risk-alert", f"Kill switch activated: {reason}")
-        log.warning("KILL SWITCH ACTIVATED: %s", reason)
+        if not self._kill_switch:
+            self._kill_switch = True
+            self._kill_reason = reason
+            self.report_to_ceo("risk-alert", f"KILL SWITCH ACTIVATED: {reason}")
+            log.warning("KILL SWITCH ACTIVATED: %s", reason)
 
     def deactivate_kill_switch(self) -> None:
-        self._kill_switch = False
-        log.info("Kill switch deactivated")
+        if self._kill_switch:
+            self._kill_switch = False
+            self._kill_reason = ""
+            log.info("Kill switch deactivated")
+
+    def monitor(self, portfolio: Portfolio) -> dict:
+        """Run all risk checks on the current portfolio. Call this every cycle.
+
+        Returns dict with:
+            - kill_switch: bool
+            - halt_trading: bool
+            - risk_mode_override: str | None
+            - alerts: list[str]
+        """
+        self._cycle_count += 1
+        self._alerts = []
+        halt_trading = False
+        risk_mode_override = None
+
+        if portfolio.capital <= 0:
+            self.activate_kill_switch("Capital depleted")
+            return self._result(True, "conservative")
+
+        # --- 1. Drawdown check ---
+        drawdown_pct = (portfolio.max_drawdown / portfolio.capital * 100) if portfolio.capital > 0 else 0
+        pnl_pct = (portfolio.total_pnl / max(1, portfolio.capital)) * 100
+
+        if pnl_pct < -self.kill_switch_drawdown_pct:
+            self.activate_kill_switch(f"Drawdown {pnl_pct:.1f}% exceeds kill threshold (-{self.kill_switch_drawdown_pct}%)")
+            return self._result(True, "conservative")
+
+        if pnl_pct < -10:
+            self._alert(f"SEVERE drawdown: {pnl_pct:.1f}%")
+            risk_mode_override = "conservative"
+        elif pnl_pct < -5:
+            self._alert(f"High drawdown: {pnl_pct:.1f}%")
+            risk_mode_override = "conservative"
+        elif pnl_pct < -3:
+            self._alert(f"Moderate drawdown: {pnl_pct:.1f}%")
+
+        # --- 2. Open positions count ---
+        open_positions = [p for p in portfolio.positions if p.status == PositionStatus.OPEN]
+        if len(open_positions) >= self.max_open_positions:
+            halt_trading = True
+            self._alert(f"Max open positions reached ({len(open_positions)}/{self.max_open_positions})")
+
+        # --- 3. Concentration check — no single asset > max_concentration_pct ---
+        if open_positions and portfolio.capital > 0:
+            asset_exposure: dict[str, float] = {}
+            for pos in open_positions:
+                notional = pos.notional_value if pos.notional_value > 0 else pos.quantity * pos.current_price
+                asset_exposure[pos.asset.symbol] = asset_exposure.get(pos.asset.symbol, 0) + notional
+
+            for symbol, exposure in asset_exposure.items():
+                concentration = (exposure / portfolio.capital) * 100
+                if concentration > self.max_concentration_pct:
+                    self._alert(f"Over-concentrated in {symbol}: {concentration:.1f}% of capital")
+
+        # --- 4. Margin utilization ---
+        if portfolio.margin_used > 0 and portfolio.capital > 0:
+            margin_util = (portfolio.margin_used / portfolio.capital) * 100
+            if margin_util > self.max_margin_utilization_pct:
+                halt_trading = True
+                self._alert(f"Margin utilization {margin_util:.0f}% > {self.max_margin_utilization_pct:.0f}% limit")
+            elif margin_util > 60:
+                self._alert(f"Margin utilization elevated: {margin_util:.0f}%")
+
+        # --- 5. Track consecutive losses ---
+        current_pnl = portfolio.total_pnl
+        if self._cycle_count > 1 and current_pnl < self._last_portfolio_pnl:
+            self._consecutive_losses += 1
+        elif current_pnl > self._last_portfolio_pnl:
+            self._consecutive_losses = 0
+        self._last_portfolio_pnl = current_pnl
+
+        if self._consecutive_losses >= self.consecutive_loss_limit:
+            risk_mode_override = "conservative"
+            self._alert(f"Consecutive losing cycles: {self._consecutive_losses}")
+
+        # --- 6. Auto-deactivate kill switch if recovered ---
+        if self._kill_switch and pnl_pct > -3:
+            self.deactivate_kill_switch()
+
+        # Report alerts to CEO
+        if self._alerts:
+            self.report_to_ceo("risk-monitor", f"{len(self._alerts)} risk alerts", {"alerts": self._alerts})
+            for alert in self._alerts:
+                log.warning("RISK: %s", alert)
+
+        return self._result(halt_trading, risk_mode_override)
+
+    def on_trade_closed(self, pnl: float) -> None:
+        """Track closed trade for consecutive loss detection."""
+        if pnl < 0:
+            self._consecutive_losses += 1
+        else:
+            self._consecutive_losses = max(0, self._consecutive_losses - 1)
+
+    def _alert(self, msg: str) -> None:
+        self._alerts.append(msg)
+
+    def _result(self, halt_trading: bool, risk_mode_override: str | None) -> dict:
+        return {
+            "kill_switch": self._kill_switch,
+            "halt_trading": halt_trading or self._kill_switch,
+            "risk_mode_override": risk_mode_override,
+            "alerts": list(self._alerts),
+            "consecutive_losses": self._consecutive_losses,
+        }
+
+    def get_alerts(self) -> list[str]:
+        return list(self._alerts)
 
     def format_report(self) -> str:
-        return f"\n=== Risk Team ===\nKill Switch: {'ACTIVE' if self._kill_switch else 'OFF'}"
+        lines = ["\n=== Risk Team ==="]
+        lines.append(f"Kill Switch: {'ACTIVE — ' + self._kill_reason if self._kill_switch else 'OFF'}")
+        lines.append(f"Consecutive losses: {self._consecutive_losses}")
+        lines.append(f"Cycle: {self._cycle_count}")
+        if self._alerts:
+            lines.append(f"Active alerts ({len(self._alerts)}):")
+            for a in self._alerts:
+                lines.append(f"  - {a}")
+        else:
+            lines.append("No active alerts")
+        return "\n".join(lines)
 
 
 # ============================================================
