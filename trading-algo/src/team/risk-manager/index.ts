@@ -115,14 +115,16 @@ export class RiskManager {
       takeProfitPrice,
       riskRewardRatio,
       kellyFraction: roundTo(kellyFrac, 4),
-      approved: allowed && positionSize > 0 && signal.action !== 'HOLD',
+      approved: allowed && positionSize > 0 && signal.action !== 'HOLD' && signal.confidence >= MIN_CONFIDENCE,
       reason: !allowed
         ? reason
         : positionSize <= 0
           ? 'Position size is zero – insufficient capital or edge'
           : signal.action === 'HOLD'
             ? 'Signal is HOLD – no trade'
-            : 'Trade approved',
+            : signal.confidence < MIN_CONFIDENCE
+              ? `Confidence ${signal.confidence.toFixed(2)} below minimum ${MIN_CONFIDENCE} – skipping`
+              : 'Trade approved',
     };
 
     log.info(

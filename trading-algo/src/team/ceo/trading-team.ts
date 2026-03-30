@@ -190,8 +190,8 @@ export class TradingTeam extends TeamBase {
     for (const [, entries] of byAsset) {
       entries.sort((a, b) => b.signal.confidence - a.signal.confidence);
       const top = entries[0];
-      // Only include if confidence meets minimum threshold
-      if (top.signal.confidence > 0.35) {
+      // Only include if confidence meets minimum threshold (matches risk manager MIN_CONFIDENCE)
+      if (top.signal.confidence >= 0.55) {
         best.push(top);
       }
     }
@@ -556,16 +556,9 @@ export class TradingTeam extends TeamBase {
         if (blocked) continue;
       }
 
-      // Prefer assets with active signals
+      // Select every asset that has an actionable signal — if a strategy says trade it, we trade it
       const hasSignal = signals.some(s => s.asset.symbol === symbol && s.action !== 'HOLD');
-
-      // Calculate recent volatility
-      const closes = data.candles.slice(-20).map(c => c.close);
-      const returns = closes.slice(1).map((c, i) => Math.abs((c - closes[i]) / closes[i]));
-      const avgVol = returns.length > 0 ? returns.reduce((a, b) => a + b, 0) / returns.length : 0;
-
-      // Select if: has signal, or decent volatility (tradeable)
-      if (hasSignal || avgVol > 0.002) {
+      if (hasSignal) {
         this.selectedAssets.set(symbol, data.asset);
       }
     }
