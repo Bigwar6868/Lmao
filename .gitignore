@@ -3,6 +3,7 @@ dist/
 release/
 data/historical/
 data/journal/
+**/data/journal/
 .env
 *.log
 .DS_Store
