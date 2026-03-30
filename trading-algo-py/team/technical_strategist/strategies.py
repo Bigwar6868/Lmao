@@ -1246,12 +1246,22 @@ ALL_STRATEGIES: dict[str, type[BaseStrategy]] = {
 
 
 def create_strategy(name: str, dna: StrategyDNA | None = None) -> BaseStrategy:
+    # Check core strategies first, then forex strategies
     cls = ALL_STRATEGIES.get(name)
-    if cls is None:
-        raise ValueError(f"Unknown strategy: {name}")
-    config = StrategyConfig(name=name, enabled=True)
-    return cls(config, dna)
+    if cls is not None:
+        config = StrategyConfig(name=name, enabled=True)
+        return cls(config, dna)
+
+    # Try forex strategies
+    from team.technical_strategist.forex_strategies import FOREX_STRATEGIES, create_forex_strategy
+    if name in FOREX_STRATEGIES:
+        return create_forex_strategy(name, dna)
+
+    raise ValueError(f"Unknown strategy: {name}")
 
 
 def get_all_strategies() -> list[BaseStrategy]:
-    return [create_strategy(name) for name in ALL_STRATEGIES]
+    from team.technical_strategist.forex_strategies import get_all_forex_strategies
+    core = [create_strategy(name) for name in ALL_STRATEGIES]
+    forex = get_all_forex_strategies()
+    return core + forex

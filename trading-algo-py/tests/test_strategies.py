@@ -260,7 +260,7 @@ class TestICTIndicators:
 class TestFactory:
     def test_create_all(self):
         strategies = get_all_strategies()
-        assert len(strategies) == 7
+        assert len(strategies) == 12  # 7 core + 5 forex
 
     def test_create_by_name(self):
         s = create_strategy("momentum")
