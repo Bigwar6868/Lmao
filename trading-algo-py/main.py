@@ -184,7 +184,7 @@ class TradingOrchestrator:
         Format: "provider:model" — see create_provider() for supported providers.
         """
         from shared.agent_brain import auto_detect_provider, create_provider
-        from team.ceo import CEOAgent, TradingTeam, ResearchTeam, RiskTeam, EvolutionTeam, OpsTeam
+        from team.ceo import CEOAgent, TradingTeam, ResearchTeam, RiskTeam, EvolutionTeam, OpsTeam, QuantTeam
 
         # Default provider (auto-detect from env)
         default_provider = auto_detect_provider()
@@ -203,6 +203,7 @@ class TradingOrchestrator:
         risk_team = RiskTeam(self.network, self.ceo.id)
         evolution_team = EvolutionTeam(self.network, self.ceo.id)
         ops_team = OpsTeam(self.network, self.ceo.id)
+        quant_team = QuantTeam(self.network, self.ceo.id)
 
         self._teams = {
             "trading": trading_team,
@@ -210,6 +211,7 @@ class TradingOrchestrator:
             "risk": risk_team,
             "evolution": evolution_team,
             "ops": ops_team,
+            "quant": quant_team,
         }
 
         # Register with CEO
@@ -227,6 +229,9 @@ class TradingOrchestrator:
                                  ["Backtest strategies", "Mutate underperformers", "Detect decay"])
         self.ceo.set_team_prompt("ops", "Monitor system health and data sources",
                                  ["Check data freshness", "Monitor memory", "Validate cache"])
+        self.ceo.set_team_prompt("quant", "Run real-time quant calculations every tick",
+                                 ["Z-score mean reversion", "Cross-pair spreads", "IRP deviation",
+                                  "RSI divergence", "Hurst regime detection", "Volatility percentile"])
 
         # Per-team AI model providers
         team_providers = {
@@ -329,10 +334,23 @@ class TradingOrchestrator:
 
         log.info("CEO: %s → risk_mode=%s", ceo_decision[:60], risk_mode)
 
+        # --- Step 3.5: Quant team — feed data + generate quant signals ---
+        quant = self._teams.get("quant")
+        quant_signals = []
+        if quant:
+            quant.feed_market_data(market_data_map)
+            quant_signals = quant.generate_signals(target_assets)
+            if quant_signals:
+                log.info("Quant: %d signals (z-score, divergence, IRP, pair-spread)", len(quant_signals))
+
         # --- Step 4-6: Trading team — agents independently seek + execute ---
         trading = self._teams.get("trading")
+
+        # Inject quant signals into market_data_map as extra agent signals
+        # by adding them to the trading cycle
         trade_result = trading.run_cycle(
             market_data_map, risk_mode=risk_mode, max_trades_per_cycle=20,
+            extra_signals=quant_signals,
         ) if trading else {}
 
         # --- Step 7: Update prices for stop checks ---
@@ -374,6 +392,11 @@ class TradingOrchestrator:
             summary, risk_mode,
             spawner_status.get("total_agents", 0),
         )
+
+        # --- Step 10.5: Log quant dashboard every 5 cycles ---
+        if quant and cycle % 5 == 0:
+            dashboard = quant.get_dashboard()
+            log.info(dashboard)
 
         # Log top contributing agents
         agent_hits = trade_result.get("agent_hits", {})
@@ -614,6 +637,30 @@ def main():
                 mc_var = monte_carlo_var(rets)
                 print(f"  {sym:15s}: VaR95={var95*100:+.2f}%  CVaR95={cvar95*100:+.2f}%  Sortino={sortino:.2f}  MC-VaR={mc_var*100:+.2f}%")
 
+        elif cmd == "quant-dashboard":
+            # Run quant engine on all assets and show dashboard
+            from team.quant_engine import QuantEngine
+            engine = QuantEngine()
+            market_data_list = orchestrator.analyst.fetch_all(ALL_ASSETS, config.default_timeframe)
+            for data in market_data_list:
+                engine.feed_market_data(data)
+            engine.compute_pair_metrics()
+            print(QuantEngine.format_dashboard(engine.get_all_snapshots(), engine.get_pair_snapshots()))
+            alerts = engine.get_recent_alerts(20)
+            if alerts:
+                print(f"\n=== Recent Alerts ({len(alerts)}) ===")
+                for a in alerts:
+                    print(f"  [{a.alert_type}] {a.symbol}: {a.direction} ({a.value:.2f} vs {a.threshold:.2f}) — {a.details}")
+            # Show signals
+            signals = []
+            for asset in ALL_ASSETS:
+                signals.extend(engine.generate_signals(asset))
+            signals.extend(engine.generate_pair_signals())
+            if signals:
+                print(f"\n=== Quant Signals ({len(signals)}) ===")
+                for s in sorted(signals, key=lambda x: x.confidence, reverse=True):
+                    print(f"  {s.action.value:4s} {s.asset.symbol:<12s} conf={s.confidence:.2f} [{s.strategy}] {s.reason}")
+
         elif cmd == "stat-arb":
             from team.technical_strategist.stat_arb import StatArbStrategy
             stat_arb = StatArbStrategy()
@@ -629,8 +676,8 @@ def main():
         else:
             print(f"Unknown command: {cmd}")
             print("Commands: trade, backtest, paper-trade, evolve, analyze, auto-select, regime, macro,")
-            print("          sentiment, diagnose, opportunities, walk-forward, hrp, risk-report, stat-arb,")
-            print("          update, version")
+            print("          sentiment, diagnose, opportunities, walk-forward, hrp, risk-report,")
+            print("          quant-dashboard, stat-arb, update, version")
     else:
         # Default: CEO-driven single cycle
         orchestrator.start_ceo()

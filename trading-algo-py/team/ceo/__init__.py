@@ -368,15 +368,17 @@ class TradingTeam(TeamBase):
         macro: Any = None,
         risk_mode: str = "normal",
         max_trades_per_cycle: int = 20,
+        extra_signals: list[Signal] | None = None,
     ) -> dict:
         """Each agent independently seeks opportunities across all assets.
 
         Flow:
         1. Every active agent scans every asset → collects (agent, signal) pairs
-        2. Deduplicate: keep only the highest-confidence signal per asset
-        3. Rank all signals by confidence (best first)
-        4. Risk-assess and execute top signals up to max_trades_per_cycle
-        5. Track which agent found each trade for reputation updates
+        2. Merge in extra_signals from quant engine
+        3. Deduplicate: keep only the highest-confidence signal per asset
+        4. Rank all signals by confidence (best first)
+        5. Risk-assess and execute top signals up to max_trades_per_cycle
+        6. Track which agent found each trade for reputation updates
 
         risk_mode: "aggressive" (lower threshold), "normal", "conservative" (higher threshold)
         """
@@ -395,8 +397,15 @@ class TradingTeam(TeamBase):
                         found += 1
                 except Exception as e:
                     log.error("Agent %s error on %s: %s", agent.name, symbol, e)
-            if found:
+            if found > 0:
                 log.debug("Agent %s found %d opportunities", agent.name, found)
+
+        # --- Phase 1b: Merge quant engine signals ---
+        if extra_signals:
+            for signal in extra_signals:
+                data = market_data_map.get(signal.asset.symbol)
+                if data:
+                    agent_signals.append((None, signal, data))  # None agent = quant engine
 
         if not agent_signals:
             return {"signals": [], "executed": 0, "rejected": 0, "agent_hits": {}}
@@ -438,11 +447,12 @@ class TradingTeam(TeamBase):
                 self.executor.execute(signal, risk)
                 executed += 1
                 portfolio = self.executor.get_portfolio()
-                agent_hits[agent.name] = agent_hits.get(agent.name, 0) + 1
+                source_name = agent.name if agent else "quant-engine"
+                agent_hits[source_name] = agent_hits.get(source_name, 0) + 1
                 log.info(
                     "TRADE: %s %s @ %.5f (conf=%.2f, agent=%s, mode=%s)",
                     signal.action.value, signal.asset.symbol, signal.price,
-                    signal.confidence, agent.name, risk_mode,
+                    signal.confidence, source_name, risk_mode,
                 )
             else:
                 rejected += 1
@@ -610,6 +620,50 @@ class EvolutionTeam(TeamBase):
 
     def save(self) -> None:
         log.info("Evolution Team state saved")
+
+
+# ============================================================
+# Ops Team
+# ============================================================
+
+# ============================================================
+# Quant Team
+# ============================================================
+
+class QuantTeam(TeamBase):
+    """Real-time quantitative calculations — z-scores, IRP, divergence, Hurst."""
+
+    def __init__(self, network: AgentNetwork, ceo_id: AgentId) -> None:
+        super().__init__("quant", "Quant Team", network, ceo_id)
+        from team.quant_engine import QuantEngine
+        self.engine = QuantEngine()
+
+    def feed_market_data(self, market_data_map: dict[str, "MarketData"]) -> None:
+        """Feed all market data into quant engine."""
+        for symbol, data in market_data_map.items():
+            self.engine.feed_market_data(data)
+
+    def generate_signals(self, assets: list) -> list:
+        """Generate quant signals (z-score, divergence, IRP, vol-squeeze, pair-spread)."""
+        signals = []
+        for asset in assets:
+            signals.extend(self.engine.generate_signals(asset))
+        # Cross-pair signals
+        self.engine.compute_pair_metrics()
+        signals.extend(self.engine.generate_pair_signals())
+        return signals
+
+    def get_dashboard(self) -> str:
+        return QuantEngine.format_dashboard(
+            self.engine.get_all_snapshots(),
+            self.engine.get_pair_snapshots(),
+        )
+
+    def get_status(self) -> dict:
+        return self.engine.get_status()
+
+    def get_recent_alerts(self, count: int = 50) -> list:
+        return self.engine.get_recent_alerts(count)
 
 
 # ============================================================
