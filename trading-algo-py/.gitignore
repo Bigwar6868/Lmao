@@ -3,6 +3,7 @@ __pycache__/
 *.pyo
 .pytest_cache/
 data/historical/
+data/.last_update_check
 .env
 *.egg-info/
 dist/
