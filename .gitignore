@@ -2,6 +2,7 @@ node_modules/
 dist/
 release/
 data/historical/
+data/journal/
 .env
 *.log
 .DS_Store
