@@ -59,6 +59,11 @@ class TradingOrchestrator:
         self.network = AgentNetwork()
         self.decay_detector = DecayDetector()
 
+        # CEO + Teams (lazy-init via start_ceo())
+        self.ceo = None
+        self.spawner = None
+        self._teams: dict[str, object] = {}
+
         # Analysis modules
         self.regime_detector = RegimeDetector()
         self.macro_economist = MacroEconomist()
@@ -163,6 +168,154 @@ class TradingOrchestrator:
             "portfolio": self.executor.get_portfolio(),
         }
 
+    # ------------------------------------------------------------------
+    # CEO-driven autonomous trading
+    # ------------------------------------------------------------------
+
+    def start_ceo(self) -> None:
+        """Initialize the CEO agent, teams, spawner, and subagents."""
+        from shared.agent_brain import auto_detect_provider
+        from team.ceo import CEOAgent, TradingTeam, ResearchTeam, RiskTeam, EvolutionTeam, OpsTeam
+
+        # Auto-detect best available LLM
+        provider = auto_detect_provider()
+        provider_name = f"{provider.name}/{provider.model}" if provider else "rule-based"
+        log.info("CEO brain: %s", provider_name)
+
+        # Create CEO
+        self.ceo = CEOAgent(self.network, llm_provider=provider)
+
+        # Create teams
+        trading_team = TradingTeam(self.network, self.ceo.id)
+        research_team = ResearchTeam(self.network, self.ceo.id)
+        risk_team = RiskTeam(self.network, self.ceo.id)
+        evolution_team = EvolutionTeam(self.network, self.ceo.id)
+        ops_team = OpsTeam(self.network, self.ceo.id)
+
+        self._teams = {
+            "trading": trading_team,
+            "research": research_team,
+            "risk": risk_team,
+            "evolution": evolution_team,
+            "ops": ops_team,
+        }
+
+        # Register with CEO
+        for team in self._teams.values():
+            self.ceo.register_team(team.get_config())
+
+        # Set team prompts
+        self.ceo.set_team_prompt("trading", "Execute profitable trades with strict risk management",
+                                 ["Generate high-confidence signals", "Manage position sizing", "Review trade outcomes"])
+        self.ceo.set_team_prompt("research", "Analyze markets and detect regime changes",
+                                 ["Fetch fresh data", "Run technical analysis", "Detect correlations"])
+        self.ceo.set_team_prompt("risk", "Preserve capital — monitor drawdowns and exposure",
+                                 ["Enforce stop losses", "Monitor concentration", "Kill switch if >5% drawdown"])
+        self.ceo.set_team_prompt("evolution", "Evolve strategies for better performance",
+                                 ["Backtest strategies", "Mutate underperformers", "Detect decay"])
+        self.ceo.set_team_prompt("ops", "Monitor system health and data sources",
+                                 ["Check data freshness", "Monitor memory", "Validate cache"])
+
+        # Set up spawner with LLM provider
+        agents_dict: dict[str, object] = {}
+        strategy_map = {s.config.name: type(s) for s in self.strategies}
+        self.spawner = AgentSpawner(self.network, agents_dict, strategy_map, max_agents=config.max_agents)
+        self.spawner.set_llm_provider(provider)
+
+        # Spawn one agent per strategy (disable cooldown for initial batch)
+        self.spawner.spawn_cooldown_ms = 0
+        for strategy in self.strategies:
+            agent = self.spawner.spawn_agent(strategy.config.name, role="trader")
+            if agent:
+                trading_team.register_agent(agent)
+        self.spawner.spawn_cooldown_ms = 30_000  # Restore cooldown
+
+        self.ceo.set_active_assets(ALL_ASSETS)
+        self.ceo.set_active_strategies([s.config.name for s in self.strategies])
+
+        status = self.spawner.get_status()
+        log.info(
+            "CEO system online | %d agents | %d brains | %d loops | provider=%s",
+            status["total_agents"], status["agents_with_brains"],
+            status["agents_with_loops"], status["llm_provider"],
+        )
+
+    def run_ceo_cycle(self, assets=None, timeframe: str | None = None) -> dict:
+        """Run one CEO-driven trading cycle with full team coordination."""
+        if not self.ceo:
+            self.start_ceo()
+
+        cycle = self.ceo.increment_cycle()
+        tf = timeframe or config.default_timeframe
+        target_assets = assets or ALL_ASSETS
+
+        if self.ceo.is_paused():
+            log.warning("CEO is PAUSED — skipping cycle %d", cycle)
+            return {"cycle": cycle, "paused": True}
+
+        log.info("=== CEO Cycle %d | %d assets | %s ===", cycle, len(target_assets), tf)
+
+        # 1. Research team fetches data
+        research = self._teams.get("research")
+        market_data_map = research.fetch_all_data(target_assets, tf) if research else {}
+        log.info("Research: fetched %d assets", len(market_data_map))
+
+        # 2. Research team analyzes + detects regime
+        signals = research.analyze_all(market_data_map) if research else []
+        regime = research.detect_regime(market_data_map) if research else None
+        log.info("Research: %d signals, regime=%s", len(signals), getattr(regime, "regime", "unknown") if regime else "n/a")
+
+        # 3. CEO thinks about market conditions
+        ceo_thought = self.ceo.think(
+            f"Cycle {cycle}: {len(signals)} signals across {len(market_data_map)} assets. "
+            f"Regime: {getattr(regime, 'regime', 'unknown') if regime else 'unknown'}. "
+            f"Should we trade aggressively, conservatively, or pause?",
+        )
+        log.info("CEO decision: %s (conf=%.0f%%)", ceo_thought.get("decision", "")[:80], ceo_thought.get("confidence", 0) * 100)
+
+        # 4. Trading team runs cycle (agents analyze + execute)
+        trading = self._teams.get("trading")
+        trade_result = trading.run_cycle(market_data_map) if trading else {}
+
+        # 5. Update CEO context
+        portfolio = self.executor.get_portfolio()
+        self.ceo.update_context(portfolio)
+
+        # 6. Risk team checks
+        risk = self._teams.get("risk")
+        if risk and portfolio:
+            pnl_pct = (portfolio.total_pnl / max(1, portfolio.capital)) * 100
+            if pnl_pct < -5:
+                risk.report_to_ceo("risk-alert", f"Drawdown {pnl_pct:.1f}% exceeds limit")
+
+        # 7. Evolution team evaluates agents
+        if self.spawner and cycle % 5 == 0:
+            spawned, retired = self.spawner.evaluate()
+            if retired:
+                log.info("Evolution: retired %d agents", len(retired))
+            if spawned:
+                log.info("Evolution: spawned %d replacement agents", len(spawned))
+            self.spawner.evolve_underperformers()
+
+        # 8. Report
+        summary = self.executor.get_summary()
+        spawner_status = self.spawner.get_status() if self.spawner else {}
+        log.info(
+            "CEO Cycle %d complete | %s | agents: %d active, %d probation",
+            cycle, summary,
+            spawner_status.get("active", 0), spawner_status.get("probation", 0),
+        )
+
+        return {
+            "cycle": cycle,
+            "signals": len(signals),
+            "executed": trade_result.get("executed", 0),
+            "rejected": trade_result.get("rejected", 0),
+            "ceo_decision": ceo_thought.get("decision", ""),
+            "agents": spawner_status,
+            "portfolio": portfolio,
+        }
+
     def run_backtest(self, assets=None, timeframe: str | None = None) -> list:
         """Run backtests for all strategies on all assets."""
         from team.backtester.engine import Backtester
@@ -223,6 +376,21 @@ def main():
             if winners:
                 best = max(winners, key=lambda r: r.metrics.total_return_pct)
                 print(f"Best: {best.strategy} — {best.metrics.total_return_pct:.1f}% return")
+
+        elif cmd == "trade":
+            # CEO-driven autonomous trading (default mode)
+            orchestrator.start_ceo()
+            while True:
+                try:
+                    result = orchestrator.run_ceo_cycle()
+                    cycle_interval = getattr(config, 'auto_trade_cycle_ms', 60000) // 1000
+                    log.info("Next cycle in %ds...", cycle_interval)
+                    time.sleep(cycle_interval)
+                except KeyboardInterrupt:
+                    if orchestrator.spawner:
+                        orchestrator.spawner.stop_all_loops()
+                    log.info("CEO trading stopped")
+                    break
 
         elif cmd == "paper-trade":
             while True:
@@ -355,11 +523,12 @@ def main():
 
         else:
             print(f"Unknown command: {cmd}")
-            print("Commands: backtest, paper-trade, evolve, analyze, auto-select, regime, macro,")
+            print("Commands: trade, backtest, paper-trade, evolve, analyze, auto-select, regime, macro,")
             print("          sentiment, diagnose, opportunities, walk-forward, hrp, risk-report, stat-arb")
     else:
-        # Default: single cycle
-        orchestrator.run_cycle()
+        # Default: CEO-driven single cycle
+        orchestrator.start_ceo()
+        orchestrator.run_ceo_cycle()
 
 
 if __name__ == "__main__":

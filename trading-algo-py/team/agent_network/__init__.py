@@ -270,7 +270,13 @@ class TradingAgent:
 
 
 class AgentSpawner:
-    """Manages agent creation, retirement, and evolution."""
+    """Manages agent creation, retirement, evolution, and subagent spawning.
+
+    Each spawned agent gets:
+    - A TradingAgent wrapping a strategy
+    - An AgentBrain (with LLM provider) for autonomous reasoning
+    - An AgentLoop for independent tick-based execution
+    """
 
     def __init__(
         self,
@@ -289,9 +295,147 @@ class AgentSpawner:
         self.retire_threshold = retire_threshold
         self.last_spawn_time = 0
         self.spawn_cooldown_ms = 30_000
+        # Track subagent brains and loops
+        self._brains: dict[AgentId, Any] = {}
+        self._loops: dict[AgentId, Any] = {}
+        self._llm_provider: Any = None
+
+    def set_llm_provider(self, provider: Any) -> None:
+        """Set the LLM provider for newly spawned agents."""
+        self._llm_provider = provider
+
+    def spawn_agent(
+        self,
+        strategy_name: str,
+        role: str = "trader",
+        parent_id: AgentId | None = None,
+        dna: Any = None,
+    ) -> TradingAgent | None:
+        """Spawn a new trading agent with its own brain and loop.
+
+        Returns the agent, or None if at capacity / cooldown.
+        """
+        now = int(time.time() * 1000)
+        if len(self.agents) >= self.max_agents:
+            log.warning("Cannot spawn: at max capacity (%d agents)", self.max_agents)
+            return None
+        if now - self.last_spawn_time < self.spawn_cooldown_ms:
+            log.debug("Spawn on cooldown — skipping")
+            return None
+
+        # Create strategy instance
+        strategy_cls = self.strategies.get(strategy_name)
+        if strategy_cls is None:
+            # Try importing from the strategy factory
+            try:
+                from team.technical_strategist.strategies import create_strategy
+                strategy = create_strategy(strategy_name)
+            except Exception:
+                log.error("Unknown strategy for spawn: %s", strategy_name)
+                return None
+        else:
+            from shared.types import StrategyConfig, AssetClass
+            config = StrategyConfig(name=strategy_name, enabled=True)
+            strategy = strategy_cls(config, dna)
+
+        if dna:
+            strategy.dna = dna
+
+        # Create TradingAgent
+        agent = TradingAgent(
+            strategy=strategy,
+            network=self.network,
+            parent_id=parent_id,
+            generation=getattr(dna, "generation", 0) if dna else 0,
+        )
+        self.agents[agent.id] = agent
+
+        # Create AgentBrain for autonomous reasoning
+        try:
+            from shared.agent_brain import AgentBrain, auto_detect_provider
+            provider = self._llm_provider or auto_detect_provider()
+            brain = AgentBrain(
+                agent_id=agent.id,
+                role=role,
+                name=agent.name,
+                llm_provider=provider,
+            )
+            self._brains[agent.id] = brain
+        except Exception as e:
+            log.warning("Failed to create brain for %s: %s", agent.name, e)
+
+        # Create AgentLoop for autonomous tick-based execution
+        try:
+            from shared.agent_loop import AgentLoop
+            brain = self._brains.get(agent.id)
+            if brain:
+                loop = AgentLoop(
+                    agent_id=agent.id,
+                    name=agent.name,
+                    team_id="trading",
+                    brain=brain,
+                )
+                self._loops[agent.id] = loop
+        except Exception as e:
+            log.warning("Failed to create loop for %s: %s", agent.name, e)
+
+        self.last_spawn_time = now
+
+        # Announce spawn on the network
+        self.network.broadcast(agent.id, "spawn", {
+            "agent_id": agent.id,
+            "agent_name": agent.name,
+            "strategy": strategy_name,
+            "parent_id": parent_id,
+            "role": role,
+            "has_brain": agent.id in self._brains,
+            "has_loop": agent.id in self._loops,
+        })
+
+        log.info(
+            "Spawned agent: %s (strategy=%s, role=%s, brain=%s, loop=%s)",
+            agent.name, strategy_name, role,
+            agent.id in self._brains, agent.id in self._loops,
+        )
+        return agent
+
+    def retire_agent(self, agent_id: AgentId) -> bool:
+        """Retire an agent — stop its loop, remove its brain, unregister."""
+        agent = self.agents.pop(agent_id, None)
+        if not agent:
+            return False
+
+        # Stop loop
+        loop = self._loops.pop(agent_id, None)
+        if loop and hasattr(loop, "stop"):
+            loop.stop()
+
+        # Remove brain
+        self._brains.pop(agent_id, None)
+
+        # Unregister from network
+        agent.status = "retired"
+        self.network.unregister(agent_id)
+
+        self.network.broadcast(agent_id, "retire", {
+            "agent_id": agent_id,
+            "agent_name": agent.name,
+            "reason": "retired by spawner",
+            "final_reputation": agent.reputation,
+            "total_pnl": agent.history.total_pnl,
+        })
+
+        log.info("Retired agent: %s (rep=%.1f, pnl=%.2f)", agent.name, agent.reputation, agent.history.total_pnl)
+        return True
+
+    def get_brain(self, agent_id: AgentId) -> Any | None:
+        return self._brains.get(agent_id)
+
+    def get_loop(self, agent_id: AgentId) -> Any | None:
+        return self._loops.get(agent_id)
 
     def evaluate(self) -> tuple[list[TradingAgent], list[AgentId]]:
-        """Evaluate all agents — retire poor performers, spawn if needed."""
+        """Evaluate all agents — retire poor performers, auto-spawn replacements."""
         spawned: list[TradingAgent] = []
         retired: list[AgentId] = []
 
@@ -304,9 +448,48 @@ class AgentSpawner:
 
         # Clean retired
         for agent_id in retired:
-            self.agents.pop(agent_id, None)
+            agent = self.agents.get(agent_id)
+            strategy_name = agent.strategy.config.name if agent else None
+            self.retire_agent(agent_id)
+
+            # Auto-spawn replacement if we have room
+            if strategy_name and len(self.agents) < self.max_agents:
+                replacement = self.spawn_agent(strategy_name, role="trader")
+                if replacement:
+                    spawned.append(replacement)
+                    log.info("Auto-replaced retired agent with %s", replacement.name)
 
         return spawned, retired
+
+    async def start_all_loops(self) -> None:
+        """Start all agent loops concurrently."""
+        import asyncio
+        tasks = []
+        for agent_id, loop in self._loops.items():
+            if hasattr(loop, "start_async"):
+                tasks.append(asyncio.create_task(loop.start_async()))
+        if tasks:
+            log.info("Starting %d agent loops", len(tasks))
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    def stop_all_loops(self) -> None:
+        """Stop all running agent loops."""
+        for loop in self._loops.values():
+            if hasattr(loop, "stop"):
+                loop.stop()
+        log.info("Stopped %d agent loops", len(self._loops))
+
+    def get_status(self) -> dict:
+        """Get spawner status summary."""
+        return {
+            "total_agents": len(self.agents),
+            "max_agents": self.max_agents,
+            "agents_with_brains": len(self._brains),
+            "agents_with_loops": len(self._loops),
+            "active": sum(1 for a in self.agents.values() if a.status == "active"),
+            "probation": sum(1 for a in self.agents.values() if a.status == "probation"),
+            "llm_provider": getattr(self._llm_provider, "name", "none"),
+        }
 
     def evolve_underperformers(self) -> None:
         """Mutate DNA of agents on probation."""

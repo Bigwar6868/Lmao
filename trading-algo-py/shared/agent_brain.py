@@ -178,6 +178,165 @@ class OllamaProvider:
             return result.get("message", {}).get("content", "")
 
 
+class ClaudeProvider:
+    """Anthropic Claude API provider for agent reasoning."""
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str | None = None,
+    ) -> None:
+        self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+        self.model = model or os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-20250514")
+        self.name = "claude"
+        self._base_url = "https://api.anthropic.com/v1"
+        if self.api_key:
+            logger.info("ClaudeProvider configured model=%s", self.model)
+        else:
+            logger.warning("ClaudeProvider: no ANTHROPIC_API_KEY set")
+
+    async def query(self, system_prompt: str, user_prompt: str) -> str:
+        """Query the Anthropic Messages API."""
+        if not self.api_key:
+            raise RuntimeError("ANTHROPIC_API_KEY not set")
+        headers = {
+            "x-api-key": self.api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        }
+        payload = {
+            "model": self.model,
+            "max_tokens": 1024,
+            "system": system_prompt,
+            "messages": [{"role": "user", "content": user_prompt}],
+            "temperature": 0.3,
+        }
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                f"{self._base_url}/messages", headers=headers, json=payload,
+            )
+            response.raise_for_status()
+            result = response.json()
+            content_blocks = result.get("content", [])
+            return content_blocks[0].get("text", "") if content_blocks else ""
+
+
+class KimiClawProvider:
+    """KimiClaw API provider — routes to Kimi/Moonshot LLM for agent reasoning."""
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        endpoint: str | None = None,
+        model: str | None = None,
+    ) -> None:
+        self.api_key = (
+            api_key
+            or os.environ.get("KIMICLAW_API_KEY")
+            or os.environ.get("MOONSHOT_API_KEY", "")
+        )
+        self.endpoint = (
+            endpoint
+            or os.environ.get("KIMICLAW_LLM_ENDPOINT")
+            or os.environ.get("MOONSHOT_ENDPOINT")
+            or "https://api.moonshot.cn/v1"
+        ).rstrip("/")
+        self.model = model or os.environ.get("KIMICLAW_MODEL", "moonshot-v1-8k")
+        self.name = "kimiclaw"
+        if self.api_key:
+            logger.info("KimiClawProvider configured endpoint=%s model=%s", self.endpoint, self.model)
+        else:
+            logger.warning("KimiClawProvider: no KIMICLAW_API_KEY / MOONSHOT_API_KEY set")
+
+    async def query(self, system_prompt: str, user_prompt: str) -> str:
+        """Query KimiClaw/Moonshot chat completions API (OpenAI-compatible)."""
+        if not self.api_key:
+            raise RuntimeError("KIMICLAW_API_KEY / MOONSHOT_API_KEY not set")
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": 0.3,
+            "max_tokens": 1024,
+        }
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                f"{self.endpoint}/chat/completions", headers=headers, json=payload,
+            )
+            response.raise_for_status()
+            result = response.json()
+            choices = result.get("choices", [])
+            return choices[0].get("message", {}).get("content", "") if choices else ""
+
+
+class OpenAICompatibleProvider:
+    """Generic OpenAI-compatible API provider (DeepSeek, Groq, Together, etc.)."""
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        endpoint: str | None = None,
+        model: str | None = None,
+        name: str = "openai-compatible",
+    ) -> None:
+        self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
+        self.endpoint = (endpoint or os.environ.get("OPENAI_ENDPOINT", "https://api.openai.com/v1")).rstrip("/")
+        self.model = model or os.environ.get("OPENAI_MODEL", "gpt-4o")
+        self.name = name
+        if self.api_key:
+            logger.info("%sProvider configured endpoint=%s model=%s", name, self.endpoint, self.model)
+
+    async def query(self, system_prompt: str, user_prompt: str) -> str:
+        """Query any OpenAI-compatible chat completions API."""
+        if not self.api_key:
+            raise RuntimeError(f"{self.name}: API key not set")
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": 0.3,
+            "max_tokens": 1024,
+        }
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                f"{self.endpoint}/chat/completions", headers=headers, json=payload,
+            )
+            response.raise_for_status()
+            result = response.json()
+            choices = result.get("choices", [])
+            return choices[0].get("message", {}).get("content", "") if choices else ""
+
+
+def auto_detect_provider() -> LLMProvider | None:
+    """Auto-detect the best available LLM provider from env vars.
+
+    Priority: Claude API > KimiClaw > Ollama > OpenAI-compatible.
+    Returns None if nothing is configured.
+    """
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return ClaudeProvider()
+    if os.environ.get("KIMICLAW_API_KEY") or os.environ.get("MOONSHOT_API_KEY"):
+        return KimiClawProvider()
+    if os.environ.get("OLLAMA_ENDPOINT") or os.environ.get("OLLAMA_CEO_ENDPOINT"):
+        return OllamaProvider()
+    if os.environ.get("OPENAI_API_KEY"):
+        return OpenAICompatibleProvider()
+    # Default: try Ollama on localhost
+    return OllamaProvider()
+
+
 # ============================================================
 # Global LLM provider management
 # ============================================================
