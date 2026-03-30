@@ -978,19 +978,216 @@ class ResearchTeam(TeamBase):
         except Exception:
             return None
 
+    def assess_economic_period(self) -> dict:
+        """Determine the current economic cycle phase and cache it.
+
+        Phases: expansion, peak, contraction, trough
+        Uses macro data: GDP growth, unemployment, inflation, yield curve, policy stance.
+
+        Returns:
+            {"phase": str, "confidence": float, "details": str,
+             "risk_adjustment": str, "upcoming_events": list}
+        """
+        cached = self._cache_get("economic_period", ttl=600)
+        if cached is not None:
+            return cached
+
+        try:
+            from team.macro_economist import MacroEconomist
+            economist = MacroEconomist()
+
+            # Get global macro snapshots
+            snapshots = economist.get_global_macro()
+            us = economist.get_region_macro("United States")
+            policy_bias = economist.get_global_policy_bias()
+
+            # Get upcoming events
+            events = economist.get_upcoming_events()
+            high_impact = [e for e in events if e.impact == "high"]
+            is_event_period = economist.is_high_impact_period()
+
+            # Classify economic phase from US data (primary driver)
+            phase = "expansion"
+            confidence = 0.6
+            details_parts = []
+
+            if us:
+                gdp = us.indicators.get("gdpGrowth", 0)
+                inflation = us.indicators.get("inflation", 0)
+                unemployment = us.indicators.get("unemployment", 0)
+
+                # GDP + unemployment → phase
+                if gdp > 2.0 and unemployment < 4.5:
+                    phase = "expansion"
+                    details_parts.append(f"GDP={gdp}% strong, unemployment={unemployment}% low")
+                elif gdp > 0 and gdp <= 2.0:
+                    phase = "peak"
+                    details_parts.append(f"GDP={gdp}% slowing, late cycle")
+                elif gdp <= 0:
+                    phase = "contraction"
+                    confidence = 0.8
+                    details_parts.append(f"GDP={gdp}% negative")
+                elif unemployment > 5.5:
+                    phase = "trough"
+                    details_parts.append(f"unemployment={unemployment}% high")
+
+                # Inflation context
+                if inflation > 4.0:
+                    details_parts.append(f"inflation={inflation}% hot — tightening pressure")
+                elif inflation < 2.0:
+                    details_parts.append(f"inflation={inflation}% low — easing possible")
+
+                # Growth outlook
+                if us.growth_outlook == "slowing":
+                    if phase == "expansion":
+                        phase = "peak"
+                    details_parts.append("growth slowing")
+
+                # Policy stance adjustment
+                if us.policy_stance == "hawkish" and phase == "expansion":
+                    details_parts.append("hawkish policy — late cycle risk")
+                elif us.policy_stance == "dovish" and phase in ("contraction", "trough"):
+                    details_parts.append("dovish stimulus — recovery likely")
+
+            # Risk adjustment recommendation
+            risk_map = {
+                "expansion": "normal",
+                "peak": "conservative",
+                "contraction": "conservative",
+                "trough": "aggressive",
+            }
+            risk_adj = risk_map.get(phase, "normal")
+
+            # High-impact event → always conservative
+            if is_event_period:
+                risk_adj = "conservative"
+                details_parts.append("HIGH-IMPACT EVENT within 24h")
+
+            result = {
+                "phase": phase,
+                "confidence": confidence,
+                "details": " | ".join(details_parts) if details_parts else "insufficient data",
+                "risk_adjustment": risk_adj,
+                "policy_bias": policy_bias,
+                "upcoming_high_impact": [
+                    {"name": e.name, "date": e.next_date, "impact": e.impact}
+                    for e in high_impact[:5]
+                ],
+                "is_event_period": is_event_period,
+            }
+
+            self._cache_set("economic_period", result, ttl=600)
+            log.info("Economic period: %s (conf=%.0f%%) — %s → risk=%s",
+                     phase, confidence * 100, result["details"][:80], risk_adj)
+            return result
+
+        except Exception as e:
+            log.warning("Economic period assessment failed: %s", e)
+            fallback = {
+                "phase": "unknown", "confidence": 0, "details": str(e),
+                "risk_adjustment": "normal", "policy_bias": "mixed",
+                "upcoming_high_impact": [], "is_event_period": False,
+            }
+            self._cache_set("economic_period", fallback, ttl=60)
+            return fallback
+
+    def assess_news_impact(self) -> dict:
+        """Assess current news and economic event impact on trading.
+
+        Combines:
+        - Economic calendar (FOMC, CPI, NFP within 24h)
+        - Geopolitical risk factors
+        - Policy changes
+
+        Returns:
+            {"impact_level": str, "should_reduce_size": bool,
+             "avoid_pairs": list, "details": list[str]}
+        """
+        cached = self._cache_get("news_impact", ttl=300)
+        if cached is not None:
+            return cached
+
+        try:
+            from team.macro_economist import MacroEconomist
+            economist = MacroEconomist()
+
+            details = []
+            avoid_pairs: set[str] = set()
+            impact_score = 0  # 0-100
+
+            # 1. Economic calendar events
+            is_event = economist.is_high_impact_period()
+            if is_event:
+                events = economist.get_upcoming_events()
+                for e in events:
+                    if e.impact == "high":
+                        details.append(f"EVENT: {e.name} ({e.next_date})")
+                        impact_score += 25
+
+            # 2. Geopolitical risk factors
+            geo = economist._geopolitical
+            factors = geo.get_active_factors()
+            high_factors = [f for f in factors if f.severity in ("high", "critical")]
+            for f in high_factors:
+                details.append(f"GEO: [{f.region}] {f.description[:60]}")
+                for asset in f.affected_assets:
+                    avoid_pairs.add(asset)
+                impact_score += 10
+
+            # 3. Policy changes
+            for p in economist.get_policy_changes():
+                if p.severity == "high":
+                    details.append(f"POLICY: {p.country} — {p.description[:50]}")
+                    impact_score += 5
+
+            impact_score = min(100, impact_score)
+            if impact_score >= 50:
+                impact_level = "high"
+            elif impact_score >= 25:
+                impact_level = "medium"
+            else:
+                impact_level = "low"
+
+            result = {
+                "impact_level": impact_level,
+                "impact_score": impact_score,
+                "should_reduce_size": impact_score >= 40,
+                "avoid_pairs": sorted(avoid_pairs),
+                "details": details,
+            }
+
+            self._cache_set("news_impact", result, ttl=300)
+            log.info("News impact: %s (score=%d, avoid=%d pairs)",
+                     impact_level, impact_score, len(avoid_pairs))
+            return result
+
+        except Exception as e:
+            log.warning("News impact assessment failed: %s", e)
+            fallback = {
+                "impact_level": "unknown", "impact_score": 0,
+                "should_reduce_size": False, "avoid_pairs": [], "details": [str(e)],
+            }
+            self._cache_set("news_impact", fallback, ttl=60)
+            return fallback
+
     def get_research_summary(self) -> str:
         """Summary of cached research for other teams / CEO to read."""
         regime = self._cache_get("regime")
         macro = self._cache_get("macro")
+        econ_period = self._cache_get("economic_period")
+        news_impact = self._cache_get("news_impact")
         signal_count = self._cache_get("signal_count") or 0
         fetch_count = self._cache_get("last_fetch_count") or 0
 
         regime_str = getattr(regime, "regime", "unknown") if regime else "unknown"
         macro_str = getattr(macro, "bias", "unknown") if macro else "n/a"
+        period_str = econ_period["phase"] if econ_period else "unknown"
+        news_str = news_impact["impact_level"] if news_impact else "unknown"
 
         return (
             f"Research: {fetch_count} assets | {signal_count} signals | "
             f"regime={regime_str} | macro={macro_str} | "
+            f"econ_period={period_str} | news_impact={news_str} | "
             f"cache={len(self._cache)} entries"
         )
 

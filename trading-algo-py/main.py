@@ -307,9 +307,20 @@ class TradingOrchestrator:
         market_data_map = research.fetch_all_data(target_assets, tf) if research else {}
         log.info("Data: %d/%d assets fetched", len(market_data_map), len(target_assets))
 
-        # --- Step 2: Detect regime ---
+        # --- Step 2: Research team analyzes environment ---
         regime = research.detect_regime(market_data_map) if research else None
         regime_str = getattr(regime, "regime", "unknown") if regime else "unknown"
+
+        # Research team determines economic period + news impact (cached)
+        econ_period = research.assess_economic_period() if research else {}
+        news_impact = research.assess_news_impact() if research else {}
+        econ_phase = econ_period.get("phase", "unknown")
+        econ_risk_adj = econ_period.get("risk_adjustment", "normal")
+        news_level = news_impact.get("impact_level", "unknown")
+
+        if econ_period:
+            log.info("Economy: %s phase | policy=%s | news=%s",
+                     econ_phase, econ_period.get("policy_bias", "?"), news_level)
 
         # --- Step 3: CEO decides risk mode ---
         trading = self._teams.get("trading")
@@ -321,7 +332,10 @@ class TradingOrchestrator:
 
         ceo_thought = self.ceo.think(
             f"Cycle {cycle}: {len(market_data_map)} assets, regime={regime_str}, "
-            f"portfolio PnL={pnl_pct:+.1f}%. {research_summary}\n"
+            f"portfolio PnL={pnl_pct:+.1f}%.\n"
+            f"Economy: {econ_phase} phase, research risk={econ_risk_adj}, "
+            f"news_impact={news_level}.\n"
+            f"{research_summary}\n"
             f"Should we trade aggressively, conservatively, or pause?",
         )
         ceo_decision = ceo_thought.get("decision", "").lower()
