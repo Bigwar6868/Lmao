@@ -312,12 +312,16 @@ class TradingOrchestrator:
         regime_str = getattr(regime, "regime", "unknown") if regime else "unknown"
 
         # --- Step 3: CEO decides risk mode ---
-        portfolio = self._teams["trading"].get_portfolio() if "trading" in self._teams else self.executor.get_portfolio()
+        trading = self._teams.get("trading")
+        portfolio = trading.get_portfolio() if trading else self.executor.get_portfolio()
         pnl_pct = (portfolio.total_pnl / max(1, portfolio.capital)) * 100
+
+        # Research summary for CEO context
+        research_summary = research.get_research_summary() if research else ""
 
         ceo_thought = self.ceo.think(
             f"Cycle {cycle}: {len(market_data_map)} assets, regime={regime_str}, "
-            f"portfolio PnL={pnl_pct:+.1f}%. "
+            f"portfolio PnL={pnl_pct:+.1f}%. {research_summary}\n"
             f"Should we trade aggressively, conservatively, or pause?",
         )
         ceo_decision = ceo_thought.get("decision", "").lower()
@@ -333,7 +337,7 @@ class TradingOrchestrator:
         else:
             risk_mode = "normal"
 
-        # Override: force conservative if drawdown > 3%
+        # Hard override: force conservative if drawdown > 3%
         if pnl_pct < -3:
             risk_mode = "conservative"
             log.warning("Risk override: conservative mode (drawdown %.1f%%)", pnl_pct)
@@ -350,10 +354,7 @@ class TradingOrchestrator:
                 log.info("Quant: %d signals (z-score, divergence, IRP, pair-spread)", len(quant_signals))
 
         # --- Step 4-6: Trading team — agents independently seek + execute ---
-        trading = self._teams.get("trading")
-
-        # Inject quant signals into market_data_map as extra agent signals
-        # by adding them to the trading cycle
+        # (trading already set in step 3)
         trade_result = trading.run_cycle(
             market_data_map, risk_mode=risk_mode, max_trades_per_cycle=20,
             extra_signals=quant_signals,
@@ -446,12 +447,14 @@ class TradingOrchestrator:
             dashboard = quant.get_dashboard()
             log.info(dashboard)
 
-        # Log execution quality and filter stats
+        # Log execution quality, filter stats, and research cache
         if trading:
             exec_report = trading.executor.quality_monitor.format_report()
             filter_status = trading.filter_engine.format_status(portfolio)
             log.info(exec_report)
             log.info(filter_status)
+        if research:
+            log.info(research.get_research_summary())
 
         # Log top contributing agents
         agent_hits = trade_result.get("agent_hits", {})

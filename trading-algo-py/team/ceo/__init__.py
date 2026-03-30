@@ -524,11 +524,44 @@ class TradingTeam(TeamBase):
         self.stop_manager = AdvancedStopManager()
         self._agents: list[TradingAgent] = []
         self._trade_count = 0
-        self._ceo: CEOAgent | None = None  # Set after CEO is created
+        self._ceo: CEOAgent | None = None  # Optional — team works without it
 
     def set_ceo(self, ceo: CEOAgent) -> None:
         """Give trading team a reference to the CEO for trade monitoring."""
         self._ceo = ceo
+
+    def determine_risk_mode(self, portfolio: Portfolio) -> str:
+        """Self-determine risk mode based on portfolio state (no CEO needed).
+
+        Rules:
+        - drawdown > 5% → conservative
+        - drawdown > 3% → conservative
+        - daily loss > 2% → conservative
+        - equity curve below EMA → conservative
+        - otherwise → normal
+        """
+        if portfolio.capital <= 0:
+            return "conservative"
+
+        pnl_pct = (portfolio.total_pnl / max(1, portfolio.capital)) * 100
+
+        # Heavy drawdown → conservative
+        if pnl_pct < -5:
+            return "conservative"
+        if pnl_pct < -3:
+            return "conservative"
+
+        # Check daily loss tracker
+        daily_ok, _ = self.filter_engine.daily_loss.is_allowed(portfolio.capital)
+        if not daily_ok:
+            return "conservative"
+
+        # Check recovery mode
+        rec_mult, _ = self.filter_engine.recovery.get_size_multiplier(portfolio.capital)
+        if rec_mult < 0.5:
+            return "conservative"
+
+        return "normal"
 
     def register_agent(self, agent: TradingAgent) -> None:
         self._agents.append(agent)
@@ -838,7 +871,12 @@ class TradingTeam(TeamBase):
 # ============================================================
 
 class ResearchTeam(TeamBase):
-    """Fetches market data, runs technical analysis, detects regime."""
+    """Fetches market data, runs technical analysis, detects regime.
+
+    All research results are cached with TTL so other teams can access
+    them without re-computing. The research team works independently —
+    CEO can read its cache but research doesn't need CEO to function.
+    """
 
     def __init__(self, network: AgentNetwork, ceo_id: AgentId) -> None:
         super().__init__("research", "Research Team", network, ceo_id)
@@ -848,48 +886,113 @@ class ResearchTeam(TeamBase):
         self.market_analyst = MarketAnalyst()
         self.strategies = get_all_strategies()
 
+        # Research cache — other teams read from here
+        self._cache: dict[str, Any] = {}
+        self._cache_ts: dict[str, float] = {}  # key → timestamp
+        self._cache_ttl = 300  # 5 min default TTL
+
+    def _cache_set(self, key: str, value: Any, ttl: float | None = None) -> None:
+        self._cache[key] = value
+        self._cache_ts[key] = time.time()
+
+    def _cache_get(self, key: str, ttl: float | None = None) -> Any | None:
+        if key not in self._cache:
+            return None
+        age = time.time() - self._cache_ts.get(key, 0)
+        if age > (ttl or self._cache_ttl):
+            return None
+        return self._cache[key]
+
+    def get_cached(self, key: str) -> Any | None:
+        """Public read access to research cache for other teams."""
+        return self._cache_get(key)
+
+    def get_all_cached(self) -> dict[str, Any]:
+        """Get all non-expired cache entries."""
+        now = time.time()
+        return {k: v for k, v in self._cache.items()
+                if now - self._cache_ts.get(k, 0) < self._cache_ttl}
+
     def fetch_all_data(self, assets: list[AssetInfo], timeframe: str) -> dict[str, MarketData]:
-        """Fetch market data for all assets."""
+        """Fetch market data for all assets and cache it."""
         data_map: dict[str, MarketData] = {}
         data_list = self.market_analyst.fetch_all(assets, timeframe)
         for data in data_list:
             data_map[data.asset.symbol] = data
+        self._cache_set("market_data", data_map, ttl=120)
+        self._cache_set("last_fetch_count", len(data_map))
         return data_map
 
     def analyze_all(self, market_data_map: dict[str, MarketData], macro: Any = None) -> list[Signal]:
-        """Run all strategies on all market data."""
+        """Run all strategies on all market data and cache signals."""
         all_signals: list[Signal] = []
+        signals_by_asset: dict[str, list[Signal]] = {}
+
         for symbol, data in market_data_map.items():
+            asset_signals = []
             for strategy in self.strategies:
                 try:
                     signals = strategy.analyze(data)
                     for s in signals:
                         if s.action != SignalAction.HOLD:
                             all_signals.append(s)
+                            asset_signals.append(s)
                 except Exception as e:
                     log.error("Strategy %s error on %s: %s", strategy.config.name, symbol, e)
+            if asset_signals:
+                signals_by_asset[symbol] = asset_signals
+
+        self._cache_set("signals", all_signals)
+        self._cache_set("signals_by_asset", signals_by_asset)
+        self._cache_set("signal_count", len(all_signals))
         return all_signals
 
     def get_strategies(self):
         return self.strategies
 
     def get_macro_environment(self) -> dict | None:
-        """Get macro environment (if macro economist available)."""
+        """Get macro environment — cached for 10 minutes."""
+        cached = self._cache_get("macro", ttl=600)
+        if cached is not None:
+            return cached
         try:
             from team.macro_economist import MacroEconomist
             economist = MacroEconomist()
-            return economist.get_environment()
+            result = economist.get_environment()
+            self._cache_set("macro", result, ttl=600)
+            return result
         except Exception:
             return None
 
     def detect_regime(self, market_data_map: dict[str, MarketData], macro: Any = None):
-        """Detect market regime."""
+        """Detect market regime — cached for 5 minutes."""
+        cached = self._cache_get("regime")
+        if cached is not None:
+            return cached
         try:
             from team.regime_detector import RegimeDetector
             detector = RegimeDetector()
-            return detector.detect(market_data_map, macro)
+            result = detector.detect(market_data_map, macro)
+            self._cache_set("regime", result)
+            return result
         except Exception:
             return None
+
+    def get_research_summary(self) -> str:
+        """Summary of cached research for other teams / CEO to read."""
+        regime = self._cache_get("regime")
+        macro = self._cache_get("macro")
+        signal_count = self._cache_get("signal_count") or 0
+        fetch_count = self._cache_get("last_fetch_count") or 0
+
+        regime_str = getattr(regime, "regime", "unknown") if regime else "unknown"
+        macro_str = getattr(macro, "bias", "unknown") if macro else "n/a"
+
+        return (
+            f"Research: {fetch_count} assets | {signal_count} signals | "
+            f"regime={regime_str} | macro={macro_str} | "
+            f"cache={len(self._cache)} entries"
+        )
 
 
 # ============================================================
