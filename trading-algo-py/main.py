@@ -390,11 +390,11 @@ class TradingOrchestrator:
         if hasattr(self, "post_trade_reviewer") and self.spawner:
             reviewer = self.post_trade_reviewer
 
-            # Register any new trades for agent attribution
+            # Register any new trades for agent attribution (use trade-agent map)
             if trading and trading.executor.paper.positions:
                 for pos in trading.executor.paper.positions:
-                    # Try to find which agent opened this trade from recent agent_hits
-                    reviewer.register_trade(pos.id, trade_result.get("agent_hits", {}).get(pos.strategy, "unknown"))
+                    agent_name = trading._trade_agent_map.get(pos.id, "unknown")
+                    reviewer.register_trade(pos.id, agent_name)
 
             # Sync closed trades
             if self.executor.mode == "live":
@@ -562,6 +562,17 @@ def main():
             log.info("Update available! Run: python main.py update")
     except Exception:
         pass  # Never block startup on update check failure
+
+    # Startup banner with version
+    try:
+        from shared.updater import get_current_version, get_local_commit
+        _v = get_current_version()
+        _c = get_local_commit() or "?"
+        print(f"\n  Trading Algorithm v{_v}  (commit: {_c})")
+        print(f"  Mode: {config.trading_mode} | Cloud: {config.cloud_mode}")
+        print()
+    except Exception:
+        pass
 
     orchestrator = TradingOrchestrator()
 

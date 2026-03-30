@@ -526,9 +526,46 @@ class TradingTeam(TeamBase):
         self._trade_count = 0
         self._ceo: CEOAgent | None = None  # Optional — team works without it
 
+        # Agent-trade linkage: position_id → agent_name (for evolution)
+        self._trade_agent_map: dict[str, str] = {}
+
     def set_ceo(self, ceo: CEOAgent) -> None:
         """Give trading team a reference to the CEO for trade monitoring."""
         self._ceo = ceo
+
+    def _record_outcome_for_position(self, pos) -> None:
+        """Record trade outcome on the owning agent. Drives evolution."""
+        agent_name = self._trade_agent_map.get(pos.id)
+        if not agent_name or agent_name == "quant-engine":
+            for agent in self._agents:
+                agent.on_trade_closed(pos.id)
+            return
+
+        entry_value = pos.entry_price * pos.quantity
+        pnl_pct = (pos.realized_pnl / entry_value * 100) if entry_value > 0 else 0
+        from team.agent_network import TradeOutcome
+        outcome = TradeOutcome(
+            signal_id=pos.id,
+            asset=pos.asset.symbol,
+            pnl=pos.realized_pnl,
+            pnl_pct=pnl_pct,
+            strategy=pos.strategy,
+            timestamp=int(time.time() * 1000),
+        )
+        for agent in self._agents:
+            if agent.name == agent_name:
+                agent.record_outcome(outcome)
+                agent.on_trade_closed(pos.id)
+                log.info(
+                    "EVOLUTION: %s %s PnL=$%.2f (%.1f%%) → rep=%.0f (was %.0f)",
+                    agent.name, pos.asset.symbol, pos.realized_pnl,
+                    pnl_pct, agent.reputation,
+                    agent.history.peak_reputation,
+                )
+                return
+        # Agent not found — clean up
+        for agent in self._agents:
+            agent.on_trade_closed(pos.id)
 
     def determine_risk_mode(self, portfolio: Portfolio) -> str:
         """Self-determine risk mode based on portfolio state (no CEO needed).
@@ -582,13 +619,11 @@ class TradingTeam(TeamBase):
         # Standard stop check (SL/TP hits)
         closed = self.executor.check_stops(prices)
 
-        # Notify filter engine and agents about closed trades
+        # Record outcome on owning agent + notify filters
         for pos in closed:
             self.filter_engine.on_trade_closed(pos.asset.symbol, pos.realized_pnl)
             self.stop_manager.on_position_closed(pos.id)
-            # Notify owning agent
-            for agent in self._agents:
-                agent.on_trade_closed(pos.id)
+            self._record_outcome_for_position(pos)
 
         # --- CEO trade monitoring ---
         # CEO reviews all open positions and decides: hold, tighten, or close
@@ -636,9 +671,7 @@ class TradingTeam(TeamBase):
                                 if pos.id == pos_id and pos.status == PositionStatus.OPEN:
                                     price = prices.get(pos.asset.symbol, pos.current_price)
                                     self.executor.paper._close_position(pos, price, f"ceo:{decision['reason']}")
-                                    # Notify owning agent
-                                    for agent in self._agents:
-                                        agent.on_trade_closed(pos_id)
+                                    self._record_outcome_for_position(pos)
                                     self.filter_engine.on_trade_closed(pos.asset.symbol, pos.realized_pnl)
                                     log.info("CEO closed %s %s: %s (PnL=%.2f)",
                                              pos.side.value, pos.asset.symbol,
@@ -674,7 +707,7 @@ class TradingTeam(TeamBase):
                             if pos.id == pos_id and pos.status == PositionStatus.OPEN:
                                 price = prices.get(pos.asset.symbol, pos.current_price)
                                 self.executor.paper._close_position(pos, price, f"agent:{agent.name} {action['reason']}")
-                                agent.on_trade_closed(pos_id)
+                                self._record_outcome_for_position(pos)
                                 self.filter_engine.on_trade_closed(pos.asset.symbol, pos.realized_pnl)
                                 log.info("Agent %s closed %s %s: %s (PnL=%.2f)",
                                          agent.name, pos.side.value, pos.asset.symbol,
@@ -801,19 +834,23 @@ class TradingTeam(TeamBase):
                 source_name = agent.name if agent else "quant-engine"
                 agent_hits[source_name] = agent_hits.get(source_name, 0) + 1
 
-                # Register trade with agent for monitoring
+                # Register trade with agent for monitoring + evolution tracking
                 position = result.get("position")
-                if agent and position:
-                    agent.register_trade(
-                        position_id=position.id,
-                        symbol=signal.asset.symbol,
-                        side=signal.action.value,
-                        entry_price=position.entry_price,
-                        quantity=position.quantity,
-                        stop_loss=risk.stop_loss_price,
-                        take_profit=risk.take_profit_price,
-                        strategy=signal.strategy,
-                    )
+                if position:
+                    # Map position → agent for performance attribution
+                    self._trade_agent_map[position.id] = source_name
+
+                    if agent:
+                        agent.register_trade(
+                            position_id=position.id,
+                            symbol=signal.asset.symbol,
+                            side=signal.action.value,
+                            entry_price=position.entry_price,
+                            quantity=position.quantity,
+                            stop_loss=risk.stop_loss_price,
+                            take_profit=risk.take_profit_price,
+                            strategy=signal.strategy,
+                        )
 
                 log.info(
                     "TRADE: %s %s @ %.5f (conf=%.2f, agent=%s, mode=%s, filter_mult=%.2f)",
