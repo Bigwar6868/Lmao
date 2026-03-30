@@ -16,7 +16,7 @@
 | Market Analyst | `team/market-analyst/` | OHLCV data fetching + caching |
 | Technical Strategist | `team/technical-strategist/` | 4 strategies (momentum, mean-reversion, breakout, multi-indicator) |
 | Risk Manager | `team/risk-manager/` | Kelly criterion, ATR stops, position sizing |
-| Executor | `team/executor/` | Paper + live order execution |
+| Executor | `team/executor/` | Live order execution |
 | Backtester | `team/backtester/` | Historical performance testing |
 | Self-Improver | `team/self-improver/` | Genetic algorithm strategy evolution |
 

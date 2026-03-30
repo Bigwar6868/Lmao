@@ -60,6 +60,7 @@ export interface Signal {
   action: SignalAction;
   confidence: number;       // 0.0 to 1.0
   price: number;
+  spread?: number;          // bid-ask spread (used for 1/spread unit sizing)
   timestamp: number;
   strategy: string;
   timeframe: Timeframe;

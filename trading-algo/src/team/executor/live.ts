@@ -5,12 +5,17 @@ import { generateId } from '../../shared/utils.js';
 import { createModuleLogger } from '../../shared/logger.js';
 import { eventBus } from '../../shared/events.js';
 import { config } from '../../config/index.js';
+import { OandaClient } from './oanda.js';
 
 const log = createModuleLogger('live-executor');
 
 /**
- * Live trade executor — places real orders via CCXT (crypto) or broker API (forex).
- * Tracks portfolio, positions, P&L, and manages stop-loss/take-profit.
+ * Live trade executor — routes orders to the correct broker:
+ *  - Forex + metals → OANDA v20 REST API
+ *  - Crypto → CCXT (Binance / Bybit)
+ *
+ * Fetches live bid/ask spread before execution so the PositionSizer
+ * can apply 1/spread unit adjustment.
  */
 export class LiveExecutor {
   private portfolio: Portfolio;
@@ -18,6 +23,7 @@ export class LiveExecutor {
   private config: ExecutorConfig;
   private peakEquity: number;
   private exchange: any = null;
+  private oanda: OandaClient;
 
   constructor(executorConfig?: Partial<ExecutorConfig>) {
     this.config = {
@@ -40,6 +46,7 @@ export class LiveExecutor {
       lastUpdated: Date.now(),
     };
 
+    this.oanda = new OandaClient();
     this.initExchange();
     log.info({ capital: this.config.initialCapital }, 'Live executor initialized');
   }
@@ -66,11 +73,25 @@ export class LiveExecutor {
         });
         log.info('Connected to Bybit exchange');
       } else {
-        log.warn('No exchange API keys configured — orders will be tracked locally only');
+        log.warn('No crypto exchange API keys configured');
       }
     } catch (err) {
-      log.warn({ err }, 'CCXT not available — orders will be tracked locally only');
+      log.warn({ err }, 'CCXT not available');
     }
+  }
+
+  /**
+   * Fetch live spread for a symbol (used to enrich signals for 1/spread sizing).
+   */
+  async getSpread(symbol: string): Promise<number | undefined> {
+    if (this.oanda.isConfigured) {
+      const prices = await this.oanda.getPrices([symbol]);
+      const pricing = prices.get(symbol);
+      if (pricing && pricing.spread > 0) {
+        return pricing.spread;
+      }
+    }
+    return undefined;
   }
 
   /**
@@ -92,14 +113,38 @@ export class LiveExecutor {
 
     const quantity = risk.recommendedSize / signal.price;
     const order = createOrderFromSignal(signal, quantity);
+    const side = signal.action === 'BUY' ? 'buy' as const : 'sell' as const;
 
-    // Place order on exchange if available
     let fillPrice = signal.price;
     let commission: number;
 
-    if (this.exchange && signal.asset.assetClass === 'crypto') {
+    // Route to the correct broker
+    const isForexOrMetal = signal.asset.assetClass === 'forex';
+
+    if (isForexOrMetal && this.oanda.isConfigured) {
+      // ---- OANDA for forex + metals ----
       try {
-        const side = signal.action === 'BUY' ? 'buy' : 'sell';
+        const result = await this.oanda.placeMarketOrder(
+          signal.asset.symbol,
+          side,
+          risk.recommendedSize,
+          signal.price,
+          risk.stopLossPrice > 0 ? risk.stopLossPrice : undefined,
+          risk.takeProfitPrice > 0 ? risk.takeProfitPrice : undefined,
+        );
+        fillPrice = result.fillPrice;
+        commission = result.commission;
+        log.info(
+          { symbol: signal.asset.symbol, side, price: fillPrice, units: result.units, tradeId: result.tradeId },
+          'OANDA order filled',
+        );
+      } catch (err) {
+        log.error({ err, symbol: signal.asset.symbol }, 'OANDA order failed');
+        return { order, portfolio: this.portfolio, success: false, error: (err as Error).message };
+      }
+    } else if (this.exchange && signal.asset.assetClass === 'crypto') {
+      // ---- CCXT for crypto ----
+      try {
         const exchangeOrder = await this.exchange.createMarketOrder(
           signal.asset.symbol,
           side,
@@ -116,7 +161,7 @@ export class LiveExecutor {
         return { order, portfolio: this.portfolio, success: false, error: (err as Error).message };
       }
     } else {
-      // Local tracking when exchange is not available
+      // ---- Local tracking fallback ----
       const slippage = signal.action === 'BUY' ? 1 + this.config.defaultSlippage : 1 - this.config.defaultSlippage;
       fillPrice = signal.price * slippage;
       commission = fillPrice * quantity * this.config.defaultCommission;
@@ -155,7 +200,7 @@ export class LiveExecutor {
       await eventBus.emit('position:opened', position, 'live-executor');
 
       log.info(
-        { symbol: signal.asset.symbol, side: 'buy', price: fillPrice, quantity, strategy: signal.strategy },
+        { symbol: signal.asset.symbol, side: 'buy', price: fillPrice, quantity, spread: signal.spread, strategy: signal.strategy },
         'Live trade executed',
       );
 
@@ -199,9 +244,6 @@ export class LiveExecutor {
     }
   }
 
-  /**
-   * Update all position prices (called on market data update).
-   */
   updatePrices(prices: Map<string, number>): void {
     for (const pos of this.portfolio.positions) {
       const price = prices.get(pos.asset.symbol);
@@ -223,9 +265,6 @@ export class LiveExecutor {
     this.portfolio.lastUpdated = Date.now();
   }
 
-  /**
-   * Check and trigger stop losses / take profits.
-   */
   async checkStops(currentPrices: Map<string, number>): Promise<void> {
     const toClose: Position[] = [];
 

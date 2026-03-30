@@ -17,7 +17,7 @@ Self-evolving multi-asset trading algorithm (crypto/forex) in TypeScript.
 cd trading-algo
 npm run test          # Always run before committing
 npm run backtest      # Test strategies
-npm run paper-trade   # Paper trading cycle
+npm run live-trade    # Live trading cycle
 npm run seed-data     # Seed cache (cloud)
 npm run diagnose      # System diagnostics
 ```
@@ -31,7 +31,7 @@ Detailed rules are split into `.claude/rules/`:
 ## Commands
 Custom commands in `.claude/commands/`:
 - `/run-backtest` — Full backtest with analysis
-- `/paper-trade` — Paper trading cycle
+- `/live-trade` — Live trading cycle
 - `/seed-real-data` — Fetch real prices via WebFetch for cloud mode
 
 ## Workflow

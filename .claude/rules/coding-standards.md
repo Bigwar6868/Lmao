@@ -21,7 +21,7 @@
 ```
 npm run dev           # Main orchestrator
 npm run backtest      # Backtest all strategies
-npm run paper-trade   # Paper trading cycle
+npm run live-trade    # Live trading cycle
 npm run analyze       # Market analysis only
 npm run evolve        # Evolve strategy parameters
 npm run diagnose      # System diagnostics

@@ -29,7 +29,7 @@
       "env": {
         "ALPACA_API_KEY": "${ALPACA_API_KEY}",
         "ALPACA_API_SECRET": "${ALPACA_API_SECRET}",
-        "ALPACA_PAPER": "true"
+        "ALPACA_PAPER": "false"
       }
     }
   }
