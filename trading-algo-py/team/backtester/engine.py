@@ -268,3 +268,137 @@ class Backtester:
             avg_loss=avg_loss,
             calmar_ratio=calmar,
         )
+
+    # ------------------------------------------------------------------
+    # Walk-Forward Validation
+    # ------------------------------------------------------------------
+
+    def walk_forward(
+        self,
+        strategy: BaseStrategy,
+        market_data: MarketData,
+        n_splits: int = 5,
+        train_pct: float = 0.7,
+    ) -> dict:
+        """Walk-forward analysis: split data into train/test windows.
+
+        Returns aggregated out-of-sample results to detect overfitting.
+        """
+        candles = market_data.candles
+        total = len(candles)
+        if total < 100:
+            return {"splits": [], "oos_metrics": PerformanceMetrics(), "overfit_score": 0.0}
+
+        window_size = total // n_splits
+        train_size = int(window_size * train_pct)
+        test_size = window_size - train_size
+
+        splits: list[dict] = []
+
+        for i in range(n_splits):
+            start = i * window_size
+            train_end = start + train_size
+            test_end = min(start + window_size, total)
+
+            if train_end >= total or test_end - train_end < 20:
+                break
+
+            train_data = MarketData(
+                asset=market_data.asset,
+                timeframe=market_data.timeframe,
+                candles=candles[start:train_end],
+                last_updated=candles[train_end - 1].timestamp,
+            )
+            test_data = MarketData(
+                asset=market_data.asset,
+                timeframe=market_data.timeframe,
+                candles=candles[train_end:test_end],
+                last_updated=candles[test_end - 1].timestamp,
+            )
+
+            in_sample = self.run(strategy, train_data)
+            out_of_sample = self.run(strategy, test_data)
+
+            splits.append({
+                "split": i + 1,
+                "train_return": in_sample.metrics.total_return_pct,
+                "test_return": out_of_sample.metrics.total_return_pct,
+                "train_sharpe": in_sample.metrics.sharpe_ratio,
+                "test_sharpe": out_of_sample.metrics.sharpe_ratio,
+                "train_trades": in_sample.metrics.total_trades,
+                "test_trades": out_of_sample.metrics.total_trades,
+            })
+
+        if not splits:
+            return {"splits": [], "oos_metrics": PerformanceMetrics(), "overfit_score": 0.0}
+
+        # Aggregate OOS metrics
+        oos_returns = [s["test_return"] for s in splits]
+        is_returns = [s["train_return"] for s in splits]
+        avg_oos = sum(oos_returns) / len(oos_returns) if oos_returns else 0
+        avg_is = sum(is_returns) / len(is_returns) if is_returns else 0
+
+        # Overfit score: how much worse is OOS vs IS (0 = no overfit, 1 = total overfit)
+        if avg_is > 0:
+            overfit_score = max(0.0, min(1.0, 1.0 - (avg_oos / avg_is)))
+        else:
+            overfit_score = 0.0
+
+        log.info(
+            "Walk-forward %s: IS=%.1f%% OOS=%.1f%% overfit=%.2f splits=%d",
+            strategy.config.name, avg_is, avg_oos, overfit_score, len(splits),
+        )
+
+        return {
+            "splits": splits,
+            "avg_in_sample_return": avg_is,
+            "avg_out_of_sample_return": avg_oos,
+            "overfit_score": overfit_score,
+        }
+
+    # ------------------------------------------------------------------
+    # Dynamic Slippage Model
+    # ------------------------------------------------------------------
+
+    def run_with_dynamic_slippage(
+        self,
+        strategy: BaseStrategy,
+        market_data: MarketData,
+    ) -> BacktestResult:
+        """Run backtest with volatility-adjusted slippage.
+
+        Higher ATR = higher slippage, simulating real market conditions.
+        """
+        candles = market_data.candles
+        if len(candles) < 30:
+            return self.run(strategy, market_data)
+
+        # Calculate average ATR ratio for dynamic slippage
+        atrs: list[float] = []
+        for i in range(14, len(candles)):
+            trs = []
+            for j in range(i - 13, i + 1):
+                if j > 0:
+                    tr = max(
+                        candles[j].high - candles[j].low,
+                        abs(candles[j].high - candles[j - 1].close),
+                        abs(candles[j].low - candles[j - 1].close),
+                    )
+                    trs.append(tr)
+            if trs:
+                atrs.append(sum(trs) / len(trs))
+
+        if atrs:
+            avg_atr_ratio = sum(a / candles[i].close for i, a in enumerate(atrs, 14) if candles[i].close > 0) / len(atrs)
+            # Scale slippage: base 0.05% + volatility component
+            dynamic_slip = min(0.005, 0.0005 + avg_atr_ratio * 0.5)
+        else:
+            dynamic_slip = self.slippage
+
+        original_slip = self.slippage
+        self.slippage = dynamic_slip
+        result = self.run(strategy, market_data)
+        self.slippage = original_slip
+
+        log.info("Dynamic slippage: %.4f (base=%.4f)", dynamic_slip, original_slip)
+        return result

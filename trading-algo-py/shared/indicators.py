@@ -853,3 +853,381 @@ def detect_po3_setup(
                 result["distribution_bias"] = "bearish"
 
     return result
+
+
+# ============================================================
+# Additional Technical Indicators
+# ============================================================
+
+
+def vwap(candles: list[Candle]) -> list[float]:
+    """Volume Weighted Average Price (running cumulative)."""
+    result: list[float] = []
+    cum_tp_vol = 0.0
+    cum_vol = 0.0
+
+    for c in candles:
+        typical_price = (c.high + c.low + c.close) / 3
+        cum_tp_vol += typical_price * c.volume
+        cum_vol += c.volume
+        if cum_vol == 0:
+            result.append(typical_price)
+        else:
+            result.append(cum_tp_vol / cum_vol)
+
+    return result
+
+
+def hurst_exponent(closes: list[float], max_lag: int = 20) -> float:
+    """Hurst Exponent via Rescaled Range (R/S) analysis.
+
+    H > 0.5 = trending, H < 0.5 = mean-reverting, H = 0.5 = random walk.
+    Uses pure Python (no numpy dependency).
+    """
+    if len(closes) < max_lag + 2:
+        return 0.5  # default to random walk if insufficient data
+
+    lags: list[int] = []
+    rs_values: list[float] = []
+
+    for lag in range(2, max_lag + 1):
+        # Compute returns
+        returns = [closes[i] - closes[i - 1] for i in range(1, len(closes))]
+        n = len(returns)
+        # Divide into chunks of size `lag`
+        num_chunks = n // lag
+        if num_chunks == 0:
+            continue
+
+        rs_chunk: list[float] = []
+        for chunk_idx in range(num_chunks):
+            chunk = returns[chunk_idx * lag : (chunk_idx + 1) * lag]
+            mean_c = sum(chunk) / len(chunk)
+            deviations = [x - mean_c for x in chunk]
+            cumulative = []
+            running = 0.0
+            for d in deviations:
+                running += d
+                cumulative.append(running)
+            r = max(cumulative) - min(cumulative)
+            s = math.sqrt(sum(d ** 2 for d in deviations) / len(deviations))
+            if s > 0:
+                rs_chunk.append(r / s)
+
+        if rs_chunk:
+            avg_rs = sum(rs_chunk) / len(rs_chunk)
+            if avg_rs > 0:
+                lags.append(lag)
+                rs_values.append(avg_rs)
+
+    if len(lags) < 2:
+        return 0.5
+
+    # Linear regression of log(R/S) on log(lag) to get Hurst exponent
+    log_lags = [math.log(x) for x in lags]
+    log_rs = [math.log(x) for x in rs_values]
+
+    n = len(log_lags)
+    sum_x = sum(log_lags)
+    sum_y = sum(log_rs)
+    sum_xy = sum(a * b for a, b in zip(log_lags, log_rs))
+    sum_x2 = sum(a ** 2 for a in log_lags)
+
+    denom = n * sum_x2 - sum_x ** 2
+    if denom == 0:
+        return 0.5
+
+    h = (n * sum_xy - sum_x * sum_y) / denom
+    return max(0.0, min(1.0, h))
+
+
+def volume_profile(candles: list[Candle], bins: int = 20) -> dict:
+    """Volume Profile analysis.
+
+    Returns:
+        {"poc": float, "value_area_high": float, "value_area_low": float,
+         "profile": list[tuple[float, float]]}
+
+    POC = Price of Control (price level with most volume).
+    Value area = price range containing 70% of total volume.
+    """
+    if not candles:
+        return {
+            "poc": 0.0,
+            "value_area_high": 0.0,
+            "value_area_low": 0.0,
+            "profile": [],
+        }
+
+    price_low = min(c.low for c in candles)
+    price_high = max(c.high for c in candles)
+
+    if price_high == price_low:
+        total_vol = sum(c.volume for c in candles)
+        return {
+            "poc": price_low,
+            "value_area_high": price_high,
+            "value_area_low": price_low,
+            "profile": [(price_low, total_vol)],
+        }
+
+    bin_size = (price_high - price_low) / bins
+    # Accumulate volume into bins using typical price
+    bin_volumes: list[float] = [0.0] * bins
+    for c in candles:
+        typical = (c.high + c.low + c.close) / 3
+        idx = int((typical - price_low) / bin_size)
+        idx = min(idx, bins - 1)
+        bin_volumes[idx] += c.volume
+
+    # Build profile: list of (price_level, volume)
+    profile: list[tuple[float, float]] = []
+    for i in range(bins):
+        level = price_low + (i + 0.5) * bin_size
+        profile.append((level, bin_volumes[i]))
+
+    # POC = bin with highest volume
+    poc_idx = bin_volumes.index(max(bin_volumes))
+    poc = price_low + (poc_idx + 0.5) * bin_size
+
+    # Value area = 70% of total volume, expanding outward from POC
+    total_volume = sum(bin_volumes)
+    value_area_target = total_volume * 0.70
+
+    va_volume = bin_volumes[poc_idx]
+    lo_idx = poc_idx
+    hi_idx = poc_idx
+
+    while va_volume < value_area_target and (lo_idx > 0 or hi_idx < bins - 1):
+        expand_up = bin_volumes[hi_idx + 1] if hi_idx < bins - 1 else -1.0
+        expand_down = bin_volumes[lo_idx - 1] if lo_idx > 0 else -1.0
+
+        if expand_up >= expand_down:
+            hi_idx += 1
+            va_volume += bin_volumes[hi_idx]
+        else:
+            lo_idx -= 1
+            va_volume += bin_volumes[lo_idx]
+
+    value_area_low = price_low + lo_idx * bin_size
+    value_area_high = price_low + (hi_idx + 1) * bin_size
+
+    return {
+        "poc": poc,
+        "value_area_high": value_area_high,
+        "value_area_low": value_area_low,
+        "profile": profile,
+    }
+
+
+def ichimoku(candles: list[Candle]) -> dict:
+    """Ichimoku Cloud with standard periods (9, 26, 52).
+
+    Returns:
+        {"tenkan": list[float], "kijun": list[float],
+         "senkou_a": list[float], "senkou_b": list[float],
+         "chikou": list[float]}
+
+    Values are None where insufficient data exists.
+    """
+    tenkan_period = 9
+    kijun_period = 26
+    senkou_b_period = 52
+    n = len(candles)
+
+    def _midpoint(start: int, end: int) -> float | None:
+        if start < 0 or end > n:
+            return None
+        window = candles[start:end]
+        if not window:
+            return None
+        return (max(c.high for c in window) + min(c.low for c in window)) / 2
+
+    tenkan: list[float | None] = [None] * n
+    kijun: list[float | None] = [None] * n
+    senkou_a: list[float | None] = [None] * n
+    senkou_b: list[float | None] = [None] * n
+    chikou: list[float | None] = [None] * n
+
+    for i in range(n):
+        # Tenkan-sen (conversion line)
+        if i >= tenkan_period - 1:
+            tenkan[i] = _midpoint(i - tenkan_period + 1, i + 1)
+
+        # Kijun-sen (base line)
+        if i >= kijun_period - 1:
+            kijun[i] = _midpoint(i - kijun_period + 1, i + 1)
+
+        # Senkou Span A (leading span A) — displaced 26 periods ahead
+        if tenkan[i] is not None and kijun[i] is not None:
+            future_idx = i + kijun_period
+            if future_idx < n:
+                senkou_a[future_idx] = (tenkan[i] + kijun[i]) / 2
+
+        # Senkou Span B (leading span B) — displaced 26 periods ahead
+        if i >= senkou_b_period - 1:
+            mid = _midpoint(i - senkou_b_period + 1, i + 1)
+            future_idx = i + kijun_period
+            if future_idx < n and mid is not None:
+                senkou_b[future_idx] = mid
+
+        # Chikou Span (lagging span) — displaced 26 periods back
+        past_idx = i - kijun_period
+        if past_idx >= 0:
+            chikou[past_idx] = candles[i].close
+
+    return {
+        "tenkan": tenkan,
+        "kijun": kijun,
+        "senkou_a": senkou_a,
+        "senkou_b": senkou_b,
+        "chikou": chikou,
+    }
+
+
+def mfi(candles: list[Candle], period: int = 14) -> list[float | None]:
+    """Money Flow Index — volume-weighted RSI variant."""
+    result: list[float | None] = [None] * len(candles)
+    if len(candles) < period + 1:
+        return result
+
+    typical_prices = [(c.high + c.low + c.close) / 3 for c in candles]
+    raw_money_flow = [tp * c.volume for tp, c in zip(typical_prices, candles)]
+
+    for i in range(period, len(candles)):
+        pos_flow = 0.0
+        neg_flow = 0.0
+        for j in range(i - period + 1, i + 1):
+            if typical_prices[j] > typical_prices[j - 1]:
+                pos_flow += raw_money_flow[j]
+            elif typical_prices[j] < typical_prices[j - 1]:
+                neg_flow += raw_money_flow[j]
+
+        if neg_flow == 0:
+            result[i] = 100.0
+        else:
+            money_ratio = pos_flow / neg_flow
+            result[i] = 100 - (100 / (1 + money_ratio))
+
+    return result
+
+
+def adx(candles: list[Candle], period: int = 14) -> list[float | None]:
+    """Average Directional Index — measures trend strength."""
+    result: list[float | None] = [None] * len(candles)
+    if len(candles) < period * 2 + 1:
+        return result
+
+    # Calculate +DM, -DM, and TR
+    plus_dm: list[float] = []
+    minus_dm: list[float] = []
+    true_ranges: list[float] = []
+
+    for i in range(1, len(candles)):
+        h = candles[i].high
+        lo = candles[i].low
+        ph = candles[i - 1].high
+        plo = candles[i - 1].low
+        pc = candles[i - 1].close
+
+        up_move = h - ph
+        down_move = plo - lo
+
+        plus_dm.append(up_move if up_move > down_move and up_move > 0 else 0.0)
+        minus_dm.append(down_move if down_move > up_move and down_move > 0 else 0.0)
+        true_ranges.append(max(h - lo, abs(h - pc), abs(lo - pc)))
+
+    if len(true_ranges) < period:
+        return result
+
+    # Smoothed initial values (Wilder's smoothing)
+    smooth_plus_dm = sum(plus_dm[:period])
+    smooth_minus_dm = sum(minus_dm[:period])
+    smooth_tr = sum(true_ranges[:period])
+
+    dx_values: list[float] = []
+
+    for i in range(period, len(true_ranges)):
+        smooth_plus_dm = smooth_plus_dm - smooth_plus_dm / period + plus_dm[i]
+        smooth_minus_dm = smooth_minus_dm - smooth_minus_dm / period + minus_dm[i]
+        smooth_tr = smooth_tr - smooth_tr / period + true_ranges[i]
+
+        if smooth_tr == 0:
+            dx_values.append(0.0)
+            continue
+
+        plus_di = 100 * smooth_plus_dm / smooth_tr
+        minus_di = 100 * smooth_minus_dm / smooth_tr
+
+        di_sum = plus_di + minus_di
+        if di_sum == 0:
+            dx_values.append(0.0)
+        else:
+            dx_values.append(100 * abs(plus_di - minus_di) / di_sum)
+
+    if len(dx_values) < period:
+        return result
+
+    # First ADX = SMA of first `period` DX values
+    adx_val = sum(dx_values[:period]) / period
+    adx_start_idx = period * 2  # offset in candles array
+    if adx_start_idx < len(candles):
+        result[adx_start_idx] = adx_val
+
+    for i in range(period, len(dx_values)):
+        adx_val = (adx_val * (period - 1) + dx_values[i]) / period
+        candle_idx = i + period + 1  # offset in candles array
+        if candle_idx < len(candles):
+            result[candle_idx] = adx_val
+
+    return result
+
+
+def obv(candles: list[Candle]) -> list[float]:
+    """On Balance Volume."""
+    result: list[float] = []
+    if not candles:
+        return result
+
+    running = 0.0
+    result.append(running)
+
+    for i in range(1, len(candles)):
+        if candles[i].close > candles[i - 1].close:
+            running += candles[i].volume
+        elif candles[i].close < candles[i - 1].close:
+            running -= candles[i].volume
+        # If equal, OBV stays the same
+        result.append(running)
+
+    return result
+
+
+def keltner_channels(
+    candles: list[Candle], period: int = 20, multiplier: float = 1.5,
+) -> dict:
+    """Keltner Channels.
+
+    Returns:
+        {"upper": list[float | None], "middle": list[float | None],
+         "lower": list[float | None]}
+
+    Middle = EMA of close, bands = middle +/- multiplier * ATR.
+    """
+    middle = ema(candles, period)
+    atr_vals = atr(candles, period)
+    n = len(candles)
+
+    upper: list[float | None] = [None] * n
+    lower: list[float | None] = [None] * n
+
+    for i in range(n):
+        if middle[i] is not None and atr_vals[i] is not None:
+            upper[i] = middle[i] + multiplier * atr_vals[i]
+            lower[i] = middle[i] - multiplier * atr_vals[i]
+
+    return {
+        "upper": upper,
+        "middle": middle,
+        "lower": lower,
+    }

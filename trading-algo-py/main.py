@@ -29,6 +29,12 @@ from team.sentiment_analyst import SentimentAnalyst
 from team.scenario_simulator import ScenarioSimulator
 from team.diagnostics import DiagnosticsEngine
 from team.opportunity_scanner import OpportunityScanner
+from team.portfolio_optimizer import HierarchicalRiskParity
+from team.risk_manager.advanced_risk import (
+    calculate_var, calculate_cvar, calculate_sortino_ratio,
+    DrawdownCircuitBreaker, CorrelationAdjustedSizer,
+)
+from team.ml_signals import MLSignalEnhancer
 
 # Configure logging
 logging.basicConfig(
@@ -60,6 +66,12 @@ class TradingOrchestrator:
         self.scenario_simulator = ScenarioSimulator()
         self.diagnostics = DiagnosticsEngine()
         self.opportunity_scanner = OpportunityScanner()
+
+        # Quant modules
+        self.hrp = HierarchicalRiskParity()
+        self.ml_enhancer = MLSignalEnhancer()
+        self.circuit_breaker = DrawdownCircuitBreaker()
+        self.correlation_sizer = CorrelationAdjustedSizer()
 
         self.cycle_count = 0
         self.auto_select = auto_select
@@ -282,9 +294,69 @@ def main():
             opps = orchestrator.opportunity_scanner.scan(all_signals, md_map)
             print(OpportunityScanner.format_report(opps))
 
+        elif cmd == "walk-forward":
+            from team.backtester.engine import Backtester
+            backtester = Backtester(initial_capital=config.initial_capital)
+            assets = ALL_ASSETS[:5]
+            for asset in assets:
+                data = orchestrator.analyst.fetch_market_data(asset, config.default_timeframe)
+                for strategy in orchestrator.strategies[:3]:
+                    result = backtester.walk_forward(strategy, data)
+                    print(f"\n{strategy.config.name} on {asset.symbol}:")
+                    print(f"  IS return: {result.get('avg_in_sample_return', 0):.1f}%")
+                    print(f"  OOS return: {result.get('avg_out_of_sample_return', 0):.1f}%")
+                    print(f"  Overfit score: {result.get('overfit_score', 0):.2f}")
+
+        elif cmd == "hrp":
+            # Run HRP portfolio optimization
+            returns_map = {}
+            for asset in ALL_ASSETS[:15]:
+                data = orchestrator.analyst.fetch_market_data(asset, config.default_timeframe)
+                if data and data.candles and len(data.candles) > 20:
+                    rets = []
+                    for j in range(1, len(data.candles)):
+                        if data.candles[j-1].close > 0:
+                            rets.append((data.candles[j].close - data.candles[j-1].close) / data.candles[j-1].close)
+                    returns_map[asset.symbol] = rets
+            weights = orchestrator.hrp.optimize(returns_map)
+            print("\n=== HRP Portfolio Weights ===")
+            for sym, w in sorted(weights.items(), key=lambda x: x[1], reverse=True):
+                print(f"  {sym:15s}: {w*100:5.1f}%")
+
+        elif cmd == "risk-report":
+            # Advanced risk metrics
+            from team.risk_manager.advanced_risk import monte_carlo_var
+            returns_map = {}
+            for asset in ALL_ASSETS[:10]:
+                data = orchestrator.analyst.fetch_market_data(asset, config.default_timeframe)
+                if data and data.candles and len(data.candles) > 20:
+                    rets = [(data.candles[j].close - data.candles[j-1].close) / data.candles[j-1].close
+                            for j in range(1, len(data.candles)) if data.candles[j-1].close > 0]
+                    returns_map[asset.symbol] = rets
+            print("\n=== ADVANCED RISK REPORT ===")
+            for sym, rets in returns_map.items():
+                var95 = calculate_var(rets, 0.95)
+                cvar95 = calculate_cvar(rets, 0.95)
+                sortino = calculate_sortino_ratio(rets)
+                mc_var = monte_carlo_var(rets)
+                print(f"  {sym:15s}: VaR95={var95*100:+.2f}%  CVaR95={cvar95*100:+.2f}%  Sortino={sortino:.2f}  MC-VaR={mc_var*100:+.2f}%")
+
+        elif cmd == "stat-arb":
+            from team.technical_strategist.stat_arb import StatArbStrategy
+            stat_arb = StatArbStrategy()
+            # Analyze BTC vs ETH pair
+            data_a = orchestrator.analyst.fetch_market_data(CRYPTO_ASSETS[0], config.default_timeframe)
+            data_b = orchestrator.analyst.fetch_market_data(CRYPTO_ASSETS[1], config.default_timeframe)
+            if data_a and data_b:
+                signals = stat_arb.analyze_pair(data_a, data_b)
+                print(f"\nStat Arb {CRYPTO_ASSETS[0].symbol} vs {CRYPTO_ASSETS[1].symbol}: {len(signals)} signals")
+                for s in signals:
+                    print(f"  {s.asset.symbol}: {s.action.value} conf={s.confidence:.2f} ({s.strategy})")
+
         else:
             print(f"Unknown command: {cmd}")
-            print("Usage: python main.py [backtest|paper-trade|evolve|analyze|auto-select|regime|macro|sentiment|diagnose|opportunities]")
+            print("Commands: backtest, paper-trade, evolve, analyze, auto-select, regime, macro,")
+            print("          sentiment, diagnose, opportunities, walk-forward, hrp, risk-report, stat-arb")
     else:
         # Default: single cycle
         orchestrator.run_cycle()
