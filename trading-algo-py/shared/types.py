@@ -159,6 +159,9 @@ class Position:
     opened_at: int = 0
     closed_at: int | None = None
     broker_position_id: str | None = None  # IC Markets / cTrader position ID
+    leverage: float = 1.0           # Leverage used for this position
+    margin_required: float = 0.0    # Margin locked by this position
+    notional_value: float = 0.0     # Full notional value (quantity * price)
 
 
 # ============================================================
@@ -174,6 +177,12 @@ class Portfolio:
     total_pnl_pct: float = 0.0
     max_drawdown: float = 0.0
     last_updated: int = 0
+    # Margin tracking
+    margin_used: float = 0.0           # Total margin locked across all positions
+    margin_available: float = 0.0      # Free margin (equity - margin_used)
+    margin_level_pct: float = 0.0      # Margin level (equity / margin_used * 100)
+    total_leverage: float = 0.0        # Effective leverage (total notional / equity)
+    total_notional: float = 0.0        # Sum of all position notional values
 
 
 # ============================================================

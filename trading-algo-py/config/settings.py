@@ -59,6 +59,14 @@ class Config:
     max_correlation: float = 0.7
     max_sector_exposure: float = 0.3
 
+    # Margin & Leverage
+    default_leverage: float = field(default_factory=lambda: float(os.environ.get("DEFAULT_LEVERAGE", "30")))  # 1:30 for forex
+    max_leverage: float = field(default_factory=lambda: float(os.environ.get("MAX_LEVERAGE", "50")))  # Hard cap
+    margin_call_level: float = field(default_factory=lambda: float(os.environ.get("MARGIN_CALL_LEVEL", "50")))  # Margin call at 50%
+    margin_stop_out_level: float = field(default_factory=lambda: float(os.environ.get("MARGIN_STOP_OUT_LEVEL", "30")))  # Force close at 30%
+    max_margin_usage_pct: float = field(default_factory=lambda: float(os.environ.get("MAX_MARGIN_USAGE_PCT", "80")))  # Don't open new trades above 80% margin used
+    per_pair_leverage: str = field(default_factory=lambda: os.environ.get("PER_PAIR_LEVERAGE", ""))  # e.g. "EUR/USD:50,GBP/JPY:20"
+
     # Evolution
     population_size: int = 15
     mutation_rate: float = 0.15

@@ -463,7 +463,7 @@ class OandaExecutor:
         """
         acct = self.get_account_balance()
         if not acct:
-            return Portfolio(capital=0, available_capital=0)
+            raise RuntimeError("OANDA account balance unavailable")
 
         trades = self.get_open_trades()
         positions: list[Position] = []

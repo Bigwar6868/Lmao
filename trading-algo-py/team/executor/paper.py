@@ -1,4 +1,4 @@
-"""Paper trading engine — simulates order execution with realistic parameters."""
+"""Paper trading engine — simulates order execution with margin tracking."""
 
 from __future__ import annotations
 
@@ -11,12 +11,13 @@ from shared.types import (
     Side, OrderType, OrderStatus, PositionStatus,
 )
 from shared.events import event_bus
+from team.risk_manager.margin import MarginManager, get_pair_leverage
 
 log = logging.getLogger(__name__)
 
 
 class PaperTrader:
-    """Simulates trade execution with slippage and commission."""
+    """Simulates trade execution with slippage, commission, and margin tracking."""
 
     def __init__(
         self,
@@ -36,6 +37,7 @@ class PaperTrader:
         self.orders: list[Order] = []
         self.peak_equity = initial_capital
         self.max_drawdown = 0.0
+        self.margin_manager = MarginManager()
 
         log.info("PaperTrader initialised ($%.2f capital)", initial_capital)
 
@@ -64,13 +66,25 @@ class PaperTrader:
             fill_price = signal.price * (1 - self.slippage)
             side = Side.SELL
 
+        # Leverage & margin calculation
+        leverage = get_pair_leverage(signal.asset)
+        notional = quantity * fill_price
+        margin_req = notional / leverage
+
         # Commission
-        cost = quantity * fill_price
-        commission_cost = cost * self.commission
-        total_cost = cost + commission_cost
+        commission_cost = notional * self.commission
+        total_cost = margin_req + commission_cost  # Only margin + commission locked (not full notional)
+
+        # Margin check
+        portfolio = self.get_portfolio()
+        margin_check = self.margin_manager.check_margin(
+            signal.asset, quantity, fill_price, portfolio,
+        )
+        if not margin_check.allowed:
+            return {"success": False, "error": f"Margin: {margin_check.reason}"}
 
         if total_cost > self.available_capital:
-            return {"success": False, "error": "Insufficient capital"}
+            return {"success": False, "error": f"Insufficient free margin: need ${total_cost:.2f}, have ${self.available_capital:.2f}"}
 
         # Create order
         order = Order(
@@ -89,7 +103,7 @@ class PaperTrader:
         )
         self.orders.append(order)
 
-        # Create position
+        # Create position with margin tracking
         position = Position(
             id=str(uuid.uuid4())[:8],
             asset=signal.asset,
@@ -101,6 +115,9 @@ class PaperTrader:
             stop_loss=risk.stop_loss_price,
             take_profit=risk.take_profit_price,
             opened_at=int(time.time() * 1000),
+            leverage=leverage,
+            margin_required=margin_req,
+            notional_value=notional,
         )
         self.positions.append(position)
         self.available_capital -= total_cost
@@ -166,7 +183,8 @@ class PaperTrader:
         pos.status = PositionStatus.CLOSED
         pos.closed_at = int(time.time() * 1000)
 
-        self.available_capital += pos.entry_price * pos.quantity + pos.realized_pnl
+        # Release margin + return PnL (margin was locked, not full notional)
+        self.available_capital += pos.margin_required + pos.realized_pnl
         self.closed_positions.append(pos)
 
         event_bus.emit("position:closed", pos, "PaperTrader")
@@ -174,30 +192,56 @@ class PaperTrader:
                  pos.side.value, pos.asset.symbol, price, reason, pos.realized_pnl)
 
     def get_portfolio(self) -> Portfolio:
-        """Get current portfolio state."""
+        """Get current portfolio state with margin tracking."""
         open_positions = [p for p in self.positions if p.status == PositionStatus.OPEN]
-        position_value = sum(p.current_price * p.quantity for p in open_positions)
-        total_capital = self.available_capital + position_value
+
+        # Update notional values for open positions
+        for p in open_positions:
+            p.notional_value = p.current_price * p.quantity
+
+        margin_used = sum(p.margin_required for p in open_positions)
+        total_notional = sum(p.notional_value for p in open_positions)
         unrealized = sum(p.unrealized_pnl for p in open_positions)
         realized = sum(p.realized_pnl for p in self.closed_positions)
         total_pnl = unrealized + realized
 
+        # Equity = available cash + margin locked + unrealized PnL
+        equity = self.available_capital + margin_used + unrealized
+        margin_available = max(0, equity - margin_used)
+        margin_level = (equity / margin_used * 100) if margin_used > 0 else 0.0
+        effective_leverage = total_notional / equity if equity > 0 else 0.0
+
         # Track drawdown
-        if total_capital > self.peak_equity:
-            self.peak_equity = total_capital
-        drawdown = self.peak_equity - total_capital
+        if equity > self.peak_equity:
+            self.peak_equity = equity
+        drawdown = self.peak_equity - equity
         if drawdown > self.max_drawdown:
             self.max_drawdown = drawdown
 
-        return Portfolio(
-            capital=total_capital,
+        portfolio = Portfolio(
+            capital=equity,
             available_capital=self.available_capital,
             positions=open_positions,
             total_pnl=total_pnl,
             total_pnl_pct=(total_pnl / self.initial_capital) * 100,
             max_drawdown=self.max_drawdown,
             last_updated=int(time.time() * 1000),
+            margin_used=margin_used,
+            margin_available=margin_available,
+            margin_level_pct=margin_level,
+            total_leverage=effective_leverage,
+            total_notional=total_notional,
         )
+
+        # Check stop-out
+        stop_out = self.margin_manager.get_stop_out_positions(portfolio)
+        if stop_out:
+            for pos in stop_out[:1]:  # Close worst position
+                self._close_position(pos, pos.current_price, "margin_stop_out")
+                log.warning("MARGIN STOP-OUT: force-closed %s %s", pos.side.value, pos.asset.symbol)
+            return self.get_portfolio()  # Recalculate after close
+
+        return portfolio
 
     def get_order_history(self) -> list[Order]:
         return list(self.orders)
@@ -208,7 +252,9 @@ class PaperTrader:
         losses = sum(1 for pos in self.closed_positions if pos.realized_pnl <= 0)
         total = wins + losses
         win_rate = (wins / total * 100) if total > 0 else 0
+        margin_str = self.margin_manager.get_margin_summary(p)
         return (
             f"Portfolio: ${p.capital:.2f} | PnL: ${p.total_pnl:.2f} ({p.total_pnl_pct:.1f}%) | "
-            f"Open: {len(p.positions)} | Closed: {total} | WR: {win_rate:.0f}% | DD: ${p.max_drawdown:.2f}"
+            f"Open: {len(p.positions)} | Closed: {total} | WR: {win_rate:.0f}% | DD: ${p.max_drawdown:.2f}\n"
+            f"  {margin_str}"
         )

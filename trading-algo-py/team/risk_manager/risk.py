@@ -1,4 +1,4 @@
-"""Risk manager — Kelly criterion, ATR-based stops, position sizing."""
+"""Risk manager — Kelly criterion, ATR-based stops, position sizing, margin control."""
 
 from __future__ import annotations
 
@@ -10,12 +10,13 @@ from shared.types import (
 )
 from shared.indicators import atr
 from config.settings import config
+from team.risk_manager.margin import MarginManager, get_pair_leverage
 
 log = logging.getLogger(__name__)
 
 
 class RiskManager:
-    """Manages risk assessment for trade signals."""
+    """Manages risk assessment for trade signals with margin control."""
 
     def __init__(
         self,
@@ -28,7 +29,8 @@ class RiskManager:
         self.kelly_fraction = kelly_fraction or config.kelly_fraction
         self.stop_loss_atr = stop_loss_atr or config.default_stop_loss_atr
         self.take_profit_atr = take_profit_atr or config.default_take_profit_atr
-        log.info("RiskManager initialised")
+        self.margin_manager = MarginManager()
+        log.info("RiskManager initialised (with margin control)")
 
     def assess(
         self,
@@ -119,12 +121,37 @@ class RiskManager:
 
         # Minimum risk/reward check
         if risk_reward < 1.0:
-            return RiskAssessment(
-                max_position_size=max_size, recommended_size=recommended * 0.5,
-                stop_loss_price=stop_loss, take_profit_price=take_profit,
-                risk_reward_ratio=risk_reward, kelly_fraction=kelly,
-                approved=True, reason=f"Low R:R ({risk_reward:.2f}) — reduced size",
+            recommended = recommended * 0.5
+
+        # --- Margin check ---
+        # Calculate position quantity from recommended dollar size
+        quantity = recommended / price if price > 0 else 0
+        if quantity > 0:
+            margin_check = self.margin_manager.check_margin(
+                signal.asset, quantity, price, portfolio,
             )
+            if not margin_check.allowed:
+                return RiskAssessment(
+                    max_position_size=max_size, recommended_size=0,
+                    stop_loss_price=stop_loss, take_profit_price=take_profit,
+                    risk_reward_ratio=risk_reward, kelly_fraction=kelly,
+                    approved=False, reason=f"Margin denied: {margin_check.reason}",
+                )
+
+            # Cap recommended size to what margin allows
+            leverage = margin_check.leverage
+            max_notional_by_margin = (portfolio.capital - portfolio.margin_used) * leverage
+            max_dollar_by_margin = min(recommended, max_notional_by_margin)
+            if max_dollar_by_margin < recommended:
+                recommended = max_dollar_by_margin
+                log.debug(
+                    "Margin-capped %s size: $%.2f → $%.2f (leverage 1:%.0f)",
+                    signal.asset.symbol, max_size, recommended, leverage,
+                )
+
+        reason = "Risk approved"
+        if risk_reward < 1.0:
+            reason = f"Low R:R ({risk_reward:.2f}) — reduced size"
 
         return RiskAssessment(
             max_position_size=max_size,
@@ -134,5 +161,5 @@ class RiskManager:
             risk_reward_ratio=risk_reward,
             kelly_fraction=kelly,
             approved=True,
-            reason="Risk approved",
+            reason=reason,
         )
