@@ -45,8 +45,8 @@ class Config:
     binance_secret: str = field(default_factory=lambda: os.environ.get("BINANCE_SECRET", ""))
 
     # Trading
-    trading_mode: str = field(default_factory=lambda: os.environ.get("TRADING_MODE", "paper"))
-    trading_broker: str = field(default_factory=lambda: os.environ.get("TRADING_BROKER", "auto"))  # oanda, icmarkets, auto
+    trading_mode: str = field(default_factory=lambda: os.environ.get("TRADING_MODE", "live"))
+    trading_broker: str = field(default_factory=lambda: os.environ.get("TRADING_BROKER", "oanda"))  # oanda, icmarkets, auto
     default_timeframe: str = field(default_factory=lambda: os.environ.get("DEFAULT_TIMEFRAME", "1h"))
     initial_capital: float = field(default_factory=lambda: float(os.environ.get("INITIAL_CAPITAL", "10000")))
     max_position_size_pct: float = field(default_factory=lambda: float(os.environ.get("MAX_POSITION_SIZE_PCT", "5")))
