@@ -173,17 +173,29 @@ class TradingOrchestrator:
     # ------------------------------------------------------------------
 
     def start_ceo(self) -> None:
-        """Initialize the CEO agent, teams, spawner, and subagents."""
-        from shared.agent_brain import auto_detect_provider
+        """Initialize the CEO agent, teams, spawner, and subagents.
+
+        Each team can use a different AI model via config:
+          CEO_AI_MODEL=kimiclaw:moonshot-v1-8k
+          TRADING_AI_MODEL=claude:claude-sonnet-4-20250514
+          RESEARCH_AI_MODEL=ollama:llama3
+          etc.
+
+        Format: "provider:model" — see create_provider() for supported providers.
+        """
+        from shared.agent_brain import auto_detect_provider, create_provider
         from team.ceo import CEOAgent, TradingTeam, ResearchTeam, RiskTeam, EvolutionTeam, OpsTeam
 
-        # Auto-detect best available LLM
-        provider = auto_detect_provider()
-        provider_name = f"{provider.name}/{provider.model}" if provider else "rule-based"
+        # Default provider (auto-detect from env)
+        default_provider = auto_detect_provider()
+
+        # CEO gets its own provider if configured
+        ceo_provider = create_provider(config.ceo_ai_model) or default_provider
+        provider_name = f"{ceo_provider.name}/{ceo_provider.model}" if ceo_provider else "rule-based"
         log.info("CEO brain: %s", provider_name)
 
         # Create CEO
-        self.ceo = CEOAgent(self.network, llm_provider=provider)
+        self.ceo = CEOAgent(self.network, llm_provider=ceo_provider)
 
         # Create teams
         trading_team = TradingTeam(self.network, self.ceo.id)
@@ -216,11 +228,23 @@ class TradingOrchestrator:
         self.ceo.set_team_prompt("ops", "Monitor system health and data sources",
                                  ["Check data freshness", "Monitor memory", "Validate cache"])
 
-        # Set up spawner with LLM provider
+        # Per-team AI model providers
+        team_providers = {
+            "trading": create_provider(config.trading_ai_model) or default_provider,
+            "research": create_provider(config.research_ai_model) or default_provider,
+            "risk": create_provider(config.risk_ai_model) or default_provider,
+            "evolution": create_provider(config.evolution_ai_model) or default_provider,
+            "ops": create_provider(config.ops_ai_model) or default_provider,
+        }
+        for team_id, prov in team_providers.items():
+            if prov:
+                log.info("  %s team AI: %s/%s", team_id, prov.name, prov.model)
+
+        # Set up spawner — trading agents use the trading team's provider
         agents_dict: dict[str, object] = {}
         strategy_map = {s.config.name: type(s) for s in self.strategies}
         self.spawner = AgentSpawner(self.network, agents_dict, strategy_map, max_agents=config.max_agents)
-        self.spawner.set_llm_provider(provider)
+        self.spawner.set_llm_provider(team_providers.get("trading", default_provider))
 
         # Spawn one agent per strategy (disable cooldown for initial batch)
         self.spawner.spawn_cooldown_ms = 0
@@ -241,77 +265,132 @@ class TradingOrchestrator:
         )
 
     def run_ceo_cycle(self, assets=None, timeframe: str | None = None) -> dict:
-        """Run one CEO-driven trading cycle with full team coordination."""
+        """Run one CEO-driven trading cycle.
+
+        Flow:
+        1. Research team fetches market data for all assets
+        2. Research detects regime (trending, ranging, volatile, etc.)
+        3. CEO decides risk mode based on regime + portfolio state
+        4. 12 agents INDEPENDENTLY scan all assets for opportunities
+        5. Best signals ranked by confidence, deduplicated per asset
+        6. Execute top trades via OANDA (up to max_trades_per_cycle)
+        7. Evolution team evaluates agent performance every 5 cycles
+        """
         if not self.ceo:
             self.start_ceo()
 
         cycle = self.ceo.increment_cycle()
         tf = timeframe or config.default_timeframe
         target_assets = assets or ALL_ASSETS
+        cycle_start = time.time()
 
         if self.ceo.is_paused():
             log.warning("CEO is PAUSED — skipping cycle %d", cycle)
             return {"cycle": cycle, "paused": True}
 
-        log.info("=== CEO Cycle %d | %d assets | %s ===", cycle, len(target_assets), tf)
+        log.info("=== CEO Cycle %d | %d assets | %d agents | %s ===",
+                 cycle, len(target_assets), len(self.spawner.agents) if self.spawner else 0, tf)
 
-        # 1. Research team fetches data
+        # --- Step 1: Research team fetches data ---
         research = self._teams.get("research")
         market_data_map = research.fetch_all_data(target_assets, tf) if research else {}
-        log.info("Research: fetched %d assets", len(market_data_map))
+        log.info("Data: %d/%d assets fetched", len(market_data_map), len(target_assets))
 
-        # 2. Research team analyzes + detects regime
-        signals = research.analyze_all(market_data_map) if research else []
+        # --- Step 2: Detect regime ---
         regime = research.detect_regime(market_data_map) if research else None
-        log.info("Research: %d signals, regime=%s", len(signals), getattr(regime, "regime", "unknown") if regime else "n/a")
+        regime_str = getattr(regime, "regime", "unknown") if regime else "unknown"
 
-        # 3. CEO thinks about market conditions
+        # --- Step 3: CEO decides risk mode ---
+        portfolio = self._teams["trading"].get_portfolio() if "trading" in self._teams else self.executor.get_portfolio()
+        pnl_pct = (portfolio.total_pnl / max(1, portfolio.capital)) * 100
+
         ceo_thought = self.ceo.think(
-            f"Cycle {cycle}: {len(signals)} signals across {len(market_data_map)} assets. "
-            f"Regime: {getattr(regime, 'regime', 'unknown') if regime else 'unknown'}. "
+            f"Cycle {cycle}: {len(market_data_map)} assets, regime={regime_str}, "
+            f"portfolio PnL={pnl_pct:+.1f}%. "
             f"Should we trade aggressively, conservatively, or pause?",
         )
-        log.info("CEO decision: %s (conf=%.0f%%)", ceo_thought.get("decision", "")[:80], ceo_thought.get("confidence", 0) * 100)
+        ceo_decision = ceo_thought.get("decision", "").lower()
 
-        # 4. Trading team runs cycle (agents analyze + execute)
+        # Parse CEO decision into risk mode
+        if "pause" in ceo_decision or "stop" in ceo_decision:
+            self.ceo.pause(ceo_decision)
+            return {"cycle": cycle, "paused": True, "ceo_decision": ceo_decision}
+        elif "aggressive" in ceo_decision or "increase" in ceo_decision:
+            risk_mode = "aggressive"
+        elif "conservative" in ceo_decision or "reduce" in ceo_decision or "careful" in ceo_decision:
+            risk_mode = "conservative"
+        else:
+            risk_mode = "normal"
+
+        # Override: force conservative if drawdown > 3%
+        if pnl_pct < -3:
+            risk_mode = "conservative"
+            log.warning("Risk override: conservative mode (drawdown %.1f%%)", pnl_pct)
+
+        log.info("CEO: %s → risk_mode=%s", ceo_decision[:60], risk_mode)
+
+        # --- Step 4-6: Trading team — agents independently seek + execute ---
         trading = self._teams.get("trading")
-        trade_result = trading.run_cycle(market_data_map) if trading else {}
+        trade_result = trading.run_cycle(
+            market_data_map, risk_mode=risk_mode, max_trades_per_cycle=20,
+        ) if trading else {}
 
-        # 5. Update CEO context
-        portfolio = self.executor.get_portfolio()
+        # --- Step 7: Update prices for stop checks ---
+        prices = {}
+        for data in market_data_map.values():
+            if data.candles:
+                prices[data.asset.symbol] = data.candles[-1].close
+        if trading:
+            trading.check_stops(prices)
+
+        # --- Step 8: Update CEO context ---
+        portfolio = trading.get_portfolio() if trading else self.executor.get_portfolio()
         self.ceo.update_context(portfolio)
 
-        # 6. Risk team checks
-        risk = self._teams.get("risk")
-        if risk and portfolio:
-            pnl_pct = (portfolio.total_pnl / max(1, portfolio.capital)) * 100
-            if pnl_pct < -5:
-                risk.report_to_ceo("risk-alert", f"Drawdown {pnl_pct:.1f}% exceeds limit")
+        # --- Step 9: Risk team alert ---
+        pnl_pct = (portfolio.total_pnl / max(1, portfolio.capital)) * 100
+        risk_team = self._teams.get("risk")
+        if risk_team and pnl_pct < -5:
+            risk_team.report_to_ceo("risk-alert", f"DANGER: Drawdown {pnl_pct:.1f}%")
 
-        # 7. Evolution team evaluates agents
+        # --- Step 10: Evolution every 5 cycles ---
         if self.spawner and cycle % 5 == 0:
             spawned, retired = self.spawner.evaluate()
             if retired:
-                log.info("Evolution: retired %d agents", len(retired))
-            if spawned:
-                log.info("Evolution: spawned %d replacement agents", len(spawned))
+                log.info("Evolution: retired %d agents, spawned %d replacements", len(retired), len(spawned))
             self.spawner.evolve_underperformers()
 
-        # 8. Report
-        summary = self.executor.get_summary()
+        # --- Report ---
+        elapsed = time.time() - cycle_start
         spawner_status = self.spawner.get_status() if self.spawner else {}
+        summary = trading.get_portfolio_summary() if trading else self.executor.get_summary()
+
         log.info(
-            "CEO Cycle %d complete | %s | agents: %d active, %d probation",
-            cycle, summary,
-            spawner_status.get("active", 0), spawner_status.get("probation", 0),
+            "CEO Cycle %d done (%.1fs) | %d opportunities → %d trades, %d rejected | %s | mode=%s | agents=%d",
+            cycle, elapsed,
+            trade_result.get("total_opportunities", 0),
+            trade_result.get("executed", 0),
+            trade_result.get("rejected", 0),
+            summary, risk_mode,
+            spawner_status.get("total_agents", 0),
         )
+
+        # Log top contributing agents
+        agent_hits = trade_result.get("agent_hits", {})
+        if agent_hits:
+            log.info("Top agents: %s", ", ".join(f"{k}({v})" for k, v in
+                     sorted(agent_hits.items(), key=lambda x: -x[1])[:5]))
 
         return {
             "cycle": cycle,
-            "signals": len(signals),
+            "elapsed_s": elapsed,
+            "total_opportunities": trade_result.get("total_opportunities", 0),
+            "unique_opportunities": trade_result.get("unique_opportunities", 0),
             "executed": trade_result.get("executed", 0),
             "rejected": trade_result.get("rejected", 0),
+            "risk_mode": risk_mode,
             "ceo_decision": ceo_thought.get("decision", ""),
+            "agent_hits": agent_hits,
             "agents": spawner_status,
             "portfolio": portfolio,
         }

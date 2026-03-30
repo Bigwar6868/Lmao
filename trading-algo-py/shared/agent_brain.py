@@ -319,6 +319,52 @@ class OpenAICompatibleProvider:
             return choices[0].get("message", {}).get("content", "") if choices else ""
 
 
+def create_provider(spec: str) -> LLMProvider | None:
+    """Create a provider from a 'provider:model' string.
+
+    Examples:
+        create_provider("kimiclaw:moonshot-v1-8k")
+        create_provider("claude:claude-sonnet-4-20250514")
+        create_provider("ollama:llama3")
+        create_provider("openai:gpt-4o")
+        create_provider("deepseek:deepseek-chat")  # OpenAI-compatible with custom name
+
+    If only provider name given (no colon), uses the provider's default model.
+    """
+    if not spec or not spec.strip():
+        return None
+
+    parts = spec.strip().split(":", 1)
+    provider_name = parts[0].lower()
+    model = parts[1] if len(parts) > 1 else None
+
+    if provider_name in ("claude", "anthropic"):
+        return ClaudeProvider(model=model)
+    elif provider_name in ("kimiclaw", "kimi", "moonshot"):
+        return KimiClawProvider(model=model)
+    elif provider_name == "ollama":
+        return OllamaProvider(model=model)
+    elif provider_name in ("openai", "gpt"):
+        return OpenAICompatibleProvider(model=model, name="openai")
+    elif provider_name == "deepseek":
+        return OpenAICompatibleProvider(
+            api_key=os.environ.get("DEEPSEEK_API_KEY"),
+            endpoint=os.environ.get("DEEPSEEK_ENDPOINT", "https://api.deepseek.com/v1"),
+            model=model or "deepseek-chat",
+            name="deepseek",
+        )
+    elif provider_name == "groq":
+        return OpenAICompatibleProvider(
+            api_key=os.environ.get("GROQ_API_KEY"),
+            endpoint=os.environ.get("GROQ_ENDPOINT", "https://api.groq.com/openai/v1"),
+            model=model or "llama-3.3-70b-versatile",
+            name="groq",
+        )
+    else:
+        # Treat as OpenAI-compatible with custom endpoint
+        return OpenAICompatibleProvider(model=model, name=provider_name)
+
+
 def auto_detect_provider() -> LLMProvider | None:
     """Auto-detect the best available LLM provider from env vars.
 

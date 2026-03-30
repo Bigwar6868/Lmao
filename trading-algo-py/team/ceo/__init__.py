@@ -362,35 +362,107 @@ class TradingTeam(TeamBase):
     def check_stops(self, prices: dict[str, float]) -> None:
         self.executor.check_stops(prices)
 
-    def run_cycle(self, market_data_map: dict[str, MarketData], macro: Any = None) -> dict:
-        """Run all agents on market data, risk-assess, execute."""
-        all_signals: list[Signal] = []
-        executed = 0
-        rejected = 0
+    def run_cycle(
+        self,
+        market_data_map: dict[str, MarketData],
+        macro: Any = None,
+        risk_mode: str = "normal",
+        max_trades_per_cycle: int = 20,
+    ) -> dict:
+        """Each agent independently seeks opportunities across all assets.
+
+        Flow:
+        1. Every active agent scans every asset → collects (agent, signal) pairs
+        2. Deduplicate: keep only the highest-confidence signal per asset
+        3. Rank all signals by confidence (best first)
+        4. Risk-assess and execute top signals up to max_trades_per_cycle
+        5. Track which agent found each trade for reputation updates
+
+        risk_mode: "aggressive" (lower threshold), "normal", "conservative" (higher threshold)
+        """
+        # --- Phase 1: Each agent hunts for opportunities ---
+        agent_signals: list[tuple[TradingAgent, Signal, MarketData]] = []
 
         for agent in self._agents:
             if agent.status == "retired":
                 continue
+            found = 0
             for symbol, data in market_data_map.items():
                 try:
-                    signals = agent.analyze(data, macro)
-                    all_signals.extend(signals)
+                    signals = agent.analyze(data)
+                    for s in signals:
+                        agent_signals.append((agent, s, data))
+                        found += 1
                 except Exception as e:
                     log.error("Agent %s error on %s: %s", agent.name, symbol, e)
+            if found:
+                log.debug("Agent %s found %d opportunities", agent.name, found)
 
-        # Risk assess and execute
+        if not agent_signals:
+            return {"signals": [], "executed": 0, "rejected": 0, "agent_hits": {}}
+
+        # --- Phase 2: Deduplicate — best signal per (asset, direction) ---
+        best_per_asset: dict[str, tuple[TradingAgent, Signal, MarketData]] = {}
+        for agent, signal, data in agent_signals:
+            key = f"{signal.asset.symbol}:{signal.action.value}"
+            existing = best_per_asset.get(key)
+            if existing is None or signal.confidence > existing[1].confidence:
+                best_per_asset[key] = (agent, signal, data)
+
+        # --- Phase 3: Rank by confidence (highest first) ---
+        ranked = sorted(best_per_asset.values(), key=lambda x: x[1].confidence, reverse=True)
+
+        # --- Phase 4: Risk-adjust based on CEO mode ---
+        confidence_floor = {"aggressive": 0.30, "normal": 0.40, "conservative": 0.55}.get(risk_mode, 0.40)
+        size_multiplier = {"aggressive": 1.3, "normal": 1.0, "conservative": 0.6}.get(risk_mode, 1.0)
+
+        # --- Phase 5: Execute top signals ---
+        executed = 0
+        rejected = 0
+        agent_hits: dict[str, int] = {}  # agent_name -> trade count
         portfolio = self.executor.get_portfolio()
-        for signal in all_signals:
-            risk = self.risk_manager.assess(signal, None, portfolio)
+
+        for agent, signal, mkt_data in ranked:
+            if executed >= max_trades_per_cycle:
+                break
+
+            # Apply CEO risk mode filter
+            if signal.confidence < confidence_floor:
+                rejected += 1
+                continue
+
+            risk = self.risk_manager.assess(signal, mkt_data, portfolio)
             if risk.approved:
+                # Scale position by CEO mode
+                risk.recommended_size *= size_multiplier
                 self.executor.execute(signal, risk)
                 executed += 1
                 portfolio = self.executor.get_portfolio()
+                agent_hits[agent.name] = agent_hits.get(agent.name, 0) + 1
+                log.info(
+                    "TRADE: %s %s @ %.5f (conf=%.2f, agent=%s, mode=%s)",
+                    signal.action.value, signal.asset.symbol, signal.price,
+                    signal.confidence, agent.name, risk_mode,
+                )
             else:
                 rejected += 1
 
         self._trade_count += executed
-        return {"signals": all_signals, "executed": executed, "rejected": rejected}
+
+        # Log agent contribution summary
+        if agent_hits:
+            hits_str = ", ".join(f"{k}={v}" for k, v in sorted(agent_hits.items(), key=lambda x: -x[1]))
+            log.info("Agent contributions: %s", hits_str)
+
+        return {
+            "signals": [s for _, s, _ in ranked],
+            "total_opportunities": len(agent_signals),
+            "unique_opportunities": len(ranked),
+            "executed": executed,
+            "rejected": rejected,
+            "agent_hits": agent_hits,
+            "risk_mode": risk_mode,
+        }
 
     def select_assets_to_trade(self, market_data_map: dict[str, MarketData], signals: list[Signal]) -> list[AssetInfo]:
         """Select which assets to trade based on signal quality."""

@@ -199,7 +199,7 @@ class TradingAgent:
         if self.status == "retired":
             return []
 
-        signals = self.strategy.analyze(data, macro)
+        signals = self.strategy.analyze(data)
         result = []
         for signal in signals:
             if signal.action.value == "HOLD":

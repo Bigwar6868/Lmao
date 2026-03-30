@@ -75,6 +75,15 @@ class Config:
     ollama_url: str = field(default_factory=lambda: os.environ.get("OLLAMA_URL", "http://localhost:11434"))
     ollama_model: str = field(default_factory=lambda: os.environ.get("OLLAMA_MODEL", "llama3"))
 
+    # Per-team AI model selection (provider:model format, e.g. "kimiclaw:moonshot-v1-8k", "claude:claude-sonnet-4-20250514", "ollama:llama3")
+    # If not set, falls back to auto_detect_provider()
+    ceo_ai_model: str = field(default_factory=lambda: os.environ.get("CEO_AI_MODEL", ""))
+    trading_ai_model: str = field(default_factory=lambda: os.environ.get("TRADING_AI_MODEL", ""))
+    research_ai_model: str = field(default_factory=lambda: os.environ.get("RESEARCH_AI_MODEL", ""))
+    risk_ai_model: str = field(default_factory=lambda: os.environ.get("RISK_AI_MODEL", ""))
+    evolution_ai_model: str = field(default_factory=lambda: os.environ.get("EVOLUTION_AI_MODEL", ""))
+    ops_ai_model: str = field(default_factory=lambda: os.environ.get("OPS_AI_MODEL", ""))
+
     # Agent network
     network_message_timeout_ms: int = 5000
     max_agents: int = 30

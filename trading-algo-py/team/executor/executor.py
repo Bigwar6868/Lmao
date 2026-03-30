@@ -54,11 +54,16 @@ class Executor:
         return self._live
 
     def execute(self, signal: Signal, risk: RiskAssessment) -> dict:
-        """Execute a trade via the configured engine."""
+        """Execute a trade via the configured engine. Falls back to paper if live fails."""
         if self.mode == "live":
-            executor = self._get_live()
-            order = executor.execute_order(signal, risk)
-            return {"success": True, "order": order}
+            try:
+                executor = self._get_live()
+                order = executor.execute_order(signal, risk)
+                return {"success": True, "order": order, "broker": "live"}
+            except Exception as e:
+                log.warning("Live execution failed (%s), falling back to paper: %s",
+                            signal.asset.symbol, e)
+                return self.paper.execute_trade(signal, risk)
 
         return self.paper.execute_trade(signal, risk)
 
