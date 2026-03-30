@@ -71,6 +71,11 @@ class Config:
     population_size: int = 15
     mutation_rate: float = 0.15
     elitism_count: int = 2
+    evolution_interval_s: int = field(default_factory=lambda: int(os.environ.get("EVOLUTION_INTERVAL_S", "3600")))  # 1 hour
+
+    # Trading activity
+    max_trades_per_cycle: int = field(default_factory=lambda: int(os.environ.get("MAX_TRADES_PER_CYCLE", "40")))
+    max_hold_hours: float = field(default_factory=lambda: float(os.environ.get("MAX_HOLD_HOURS", "24")))  # Max position hold time
 
     # Data
     data_dir: str = field(default_factory=lambda: os.path.join(os.path.dirname(os.path.dirname(__file__)), "data"))

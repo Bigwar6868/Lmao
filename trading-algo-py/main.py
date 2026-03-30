@@ -82,6 +82,7 @@ class TradingOrchestrator:
 
         self.cycle_count = 0
         self.auto_select = auto_select
+        self._last_evolution_time = 0
         self.selection = None
 
         if auto_select:
@@ -387,7 +388,7 @@ class TradingOrchestrator:
         halt_new_trades = risk_result.get("halt_trading", False)
         trade_result = trading.run_cycle(
             market_data_map, risk_mode=risk_mode,
-            max_trades_per_cycle=0 if halt_new_trades else 20,
+            max_trades_per_cycle=0 if halt_new_trades else config.max_trades_per_cycle,
             extra_signals=quant_signals,
         ) if trading else {}
 
@@ -457,12 +458,18 @@ class TradingOrchestrator:
             if post_risk.get("alerts"):
                 log.info("Risk post-trade: %s", post_risk["alerts"])
 
-        # --- Step 10: Evolution every 5 cycles ---
-        if self.spawner and cycle % 5 == 0:
-            spawned, retired = self.spawner.evaluate()
-            if retired:
-                log.info("Evolution: retired %d agents, spawned %d replacements", len(retired), len(spawned))
-            self.spawner.evolve_underperformers()
+        # --- Step 10: Evolution every 1 hour (time-based, not cycle-based) ---
+        if self.spawner:
+            now = time.time()
+            last_evo = getattr(self, "_last_evolution_time", 0)
+            evo_interval = config.evolution_interval_s  # default 3600s = 1hr
+            if now - last_evo >= evo_interval:
+                spawned, retired = self.spawner.evaluate()
+                if retired:
+                    log.info("Evolution: retired %d agents, spawned %d replacements", len(retired), len(spawned))
+                self.spawner.evolve_underperformers()
+                self._last_evolution_time = now
+                log.info("Evolution cycle complete (interval=%ds, next in %ds)", evo_interval, evo_interval)
 
         # --- Report ---
         elapsed = time.time() - cycle_start

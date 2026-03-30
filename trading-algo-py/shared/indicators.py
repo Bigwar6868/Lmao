@@ -1231,3 +1231,252 @@ def keltner_channels(
         "middle": middle,
         "lower": lower,
     }
+
+
+# ============================================================
+# Statistical Mean Reversion Tests
+# ============================================================
+
+
+def _ols_simple(y: list[float], x: list[float]) -> tuple[float, float, list[float]]:
+    """Simple OLS regression: y = alpha + beta * x. Returns (alpha, beta, residuals)."""
+    n = len(y)
+    if n < 3 or n != len(x):
+        return 0.0, 0.0, []
+    x_mean = sum(x) / n
+    y_mean = sum(y) / n
+    ss_xy = sum((x[i] - x_mean) * (y[i] - y_mean) for i in range(n))
+    ss_xx = sum((x[i] - x_mean) ** 2 for i in range(n))
+    if ss_xx == 0:
+        return 0.0, 0.0, []
+    beta = ss_xy / ss_xx
+    alpha = y_mean - beta * x_mean
+    residuals = [y[i] - alpha - beta * x[i] for i in range(n)]
+    return alpha, beta, residuals
+
+
+def half_life_test(prices: list[float]) -> dict:
+    """Half-life of mean reversion via Ornstein-Uhlenbeck process.
+
+    Estimates how long (in periods) it takes for deviations from the mean
+    to decay by half. Shorter half-life = stronger mean reversion.
+
+    Returns:
+        {"half_life": float, "theta": float, "is_mean_reverting": bool, "strength": str}
+    """
+    n = len(prices)
+    if n < 30:
+        return {"half_life": float("inf"), "theta": 0, "is_mean_reverting": False, "strength": "none"}
+
+    # delta_p = alpha + beta * p_{t-1}
+    delta_p = [prices[i] - prices[i - 1] for i in range(1, n)]
+    p_lag = prices[:-1]
+
+    _alpha, beta, _residuals = _ols_simple(delta_p, p_lag)
+
+    if beta >= 0:
+        return {"half_life": float("inf"), "theta": 0, "is_mean_reverting": False, "strength": "none"}
+
+    theta = -beta  # OU speed of reversion
+    hl = math.log(2) / theta
+
+    # Classify strength
+    if hl <= 10:
+        strength = "strong"
+    elif hl <= 30:
+        strength = "moderate"
+    elif hl <= 60:
+        strength = "weak"
+    else:
+        strength = "very_weak"
+
+    return {
+        "half_life": round(hl, 2),
+        "theta": round(theta, 6),
+        "is_mean_reverting": hl <= 60,
+        "strength": strength,
+    }
+
+
+def ou_test(prices: list[float]) -> dict:
+    """Ornstein-Uhlenbeck stationarity test.
+
+    Tests if the price series follows an OU process (mean-reverting):
+      dS = theta * (mu - S) * dt + sigma * dW
+
+    Estimates theta, mu (long-run mean), sigma, and tests via ADF-like statistic.
+
+    Returns:
+        {"theta": float, "mu": float, "sigma": float, "adf_stat": float,
+         "is_ou": bool, "half_life": float}
+    """
+    n = len(prices)
+    if n < 30:
+        return {"theta": 0, "mu": 0, "sigma": 0, "adf_stat": 0, "is_ou": False, "half_life": float("inf")}
+
+    # Regress delta_p on p_{t-1}
+    delta_p = [prices[i] - prices[i - 1] for i in range(1, n)]
+    p_lag = prices[:-1]
+
+    alpha, beta, residuals = _ols_simple(delta_p, p_lag)
+
+    if not residuals or beta >= 0:
+        return {"theta": 0, "mu": sum(prices) / n, "sigma": 0, "adf_stat": 0,
+                "is_ou": False, "half_life": float("inf")}
+
+    theta = -beta
+    mu = -alpha / beta if beta != 0 else sum(prices) / n
+
+    # Sigma from residuals
+    sse = sum(r ** 2 for r in residuals)
+    sigma = math.sqrt(sse / max(len(residuals) - 2, 1))
+
+    # ADF t-statistic for beta
+    n_r = len(residuals)
+    mse = sse / max(n_r - 2, 1)
+    p_lag_mean = sum(p_lag) / len(p_lag)
+    ss_plag = sum((p - p_lag_mean) ** 2 for p in p_lag)
+    se_beta = math.sqrt(mse / ss_plag) if ss_plag > 0 and mse > 0 else 1.0
+    adf_stat = beta / se_beta if se_beta > 0 else 0
+
+    # 5% critical value (MacKinnon)
+    is_ou = adf_stat < -2.86
+
+    hl = math.log(2) / theta if theta > 0 else float("inf")
+
+    return {
+        "theta": round(theta, 6),
+        "mu": round(mu, 6),
+        "sigma": round(sigma, 6),
+        "adf_stat": round(adf_stat, 4),
+        "is_ou": is_ou,
+        "half_life": round(hl, 2),
+    }
+
+
+def variance_ratio_test(prices: list[float], lag: int = 5) -> dict:
+    """Lo-MacKinlay Variance Ratio test for mean reversion vs momentum.
+
+    VR(q) = Var(q-period returns) / (q * Var(1-period returns))
+
+    Interpretation:
+    - VR ≈ 1.0 → random walk (no predictability)
+    - VR < 1.0 → mean reversion (negative autocorrelation)
+    - VR > 1.0 → momentum/trending (positive autocorrelation)
+
+    Also computes z-statistic for significance testing.
+
+    Returns:
+        {"vr": float, "z_stat": float, "is_mean_reverting": bool,
+         "is_trending": bool, "regime": str}
+    """
+    n = len(prices)
+    if n < lag * 3 + 1:
+        return {"vr": 1.0, "z_stat": 0, "is_mean_reverting": False,
+                "is_trending": False, "regime": "unknown"}
+
+    # Log returns
+    log_returns = [math.log(prices[i] / prices[i - 1]) for i in range(1, n) if prices[i - 1] > 0 and prices[i] > 0]
+
+    if len(log_returns) < lag * 3:
+        return {"vr": 1.0, "z_stat": 0, "is_mean_reverting": False,
+                "is_trending": False, "regime": "unknown"}
+
+    T = len(log_returns)
+
+    # Variance of 1-period returns
+    mean_r = sum(log_returns) / T
+    var_1 = sum((r - mean_r) ** 2 for r in log_returns) / (T - 1)
+
+    if var_1 == 0:
+        return {"vr": 1.0, "z_stat": 0, "is_mean_reverting": False,
+                "is_trending": False, "regime": "random_walk"}
+
+    # Variance of q-period returns
+    q_returns = [sum(log_returns[i:i + lag]) for i in range(T - lag + 1)]
+    mean_q = sum(q_returns) / len(q_returns)
+    var_q = sum((r - mean_q) ** 2 for r in q_returns) / (len(q_returns) - 1)
+
+    vr = var_q / (lag * var_1)
+
+    # Lo-MacKinlay z-statistic (heteroscedasticity-robust)
+    # Under H0 (random walk): VR(q) → 1, z → N(0,1)
+    nq = T
+    z_stat = (vr - 1.0) * math.sqrt(nq) / math.sqrt(2 * (2 * lag - 1) * (lag - 1) / (3 * lag))
+
+    # Significance at 5% level (z < -1.96 for mean reversion, z > 1.96 for trending)
+    is_mean_reverting = z_stat < -1.96
+    is_trending = z_stat > 1.96
+
+    if is_mean_reverting:
+        regime = "mean_reverting"
+    elif is_trending:
+        regime = "trending"
+    else:
+        regime = "random_walk"
+
+    return {
+        "vr": round(vr, 4),
+        "z_stat": round(z_stat, 4),
+        "is_mean_reverting": is_mean_reverting,
+        "is_trending": is_trending,
+        "regime": regime,
+    }
+
+
+def combined_mean_reversion_score(prices: list[float]) -> dict:
+    """Run all 3 tests and produce a combined mean-reversion score (0-100).
+
+    Score:
+    - 0   = strong trending / no mean reversion
+    - 50  = random walk / uncertain
+    - 100 = strong mean reversion
+
+    Returns:
+        {"score": int, "regime": str, "half_life": dict, "ou": dict, "vr": dict}
+    """
+    hl = half_life_test(prices)
+    ou = ou_test(prices)
+    vr = variance_ratio_test(prices)
+
+    score = 50  # Start neutral
+
+    # Half-life contribution (±20)
+    if hl["is_mean_reverting"]:
+        if hl["strength"] == "strong":
+            score += 20
+        elif hl["strength"] == "moderate":
+            score += 12
+        elif hl["strength"] == "weak":
+            score += 5
+    else:
+        score -= 10
+
+    # OU test contribution (±20)
+    if ou["is_ou"]:
+        score += 20
+    else:
+        score -= 10
+
+    # VR test contribution (±20)
+    if vr["is_mean_reverting"]:
+        score += 20
+    elif vr["is_trending"]:
+        score -= 20
+
+    score = max(0, min(100, score))
+
+    if score >= 70:
+        regime = "mean_reverting"
+    elif score >= 40:
+        regime = "neutral"
+    else:
+        regime = "trending"
+
+    return {
+        "score": score,
+        "regime": regime,
+        "half_life": hl,
+        "ou": ou,
+        "vr": vr,
+    }

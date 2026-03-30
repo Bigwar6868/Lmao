@@ -295,6 +295,16 @@ class TradingAgent:
             "reason": "",
         }
 
+        # Rule 0: Max holding time — don't hold a single position too long
+        from config.settings import config as _cfg
+        max_hold_ms = _cfg.max_hold_hours * 3600 * 1000
+        hold_time_ms = int(time.time() * 1000) - trade.opened_at
+        if hold_time_ms > max_hold_ms:
+            result["action"] = "close"
+            hours_held = hold_time_ms / 3_600_000
+            result["reason"] = f"Max hold time exceeded: {hours_held:.1f}h > {_cfg.max_hold_hours}h"
+            return result
+
         # Rule 1: Gave back too much profit — tighten stop
         if trade.peak_pnl > 0 and pnl_pct > 0:
             current_unrealized = pnl_pct  # simplified
@@ -327,7 +337,7 @@ class TradingAgent:
                 pass
 
         # Rule 3: Stale trade — open too long with no progress
-        if trade.checks > 100 and abs(pnl_pct) < 0.1:
+        if trade.checks > 50 and abs(pnl_pct) < 0.1:
             result["action"] = "close"
             result["reason"] = f"Stale trade: {trade.checks} checks, PnL {pnl_pct:+.2f}%"
             return result
@@ -377,7 +387,14 @@ class TradingAgent:
         return result
 
     def record_outcome(self, outcome: TradeOutcome) -> None:
-        """Record trade result and update reputation."""
+        """Record trade result and update reputation.
+
+        Reward system (asymmetric — winning is rewarded more):
+        - Win:  +2 to +10 rep (based on PnL %) + streak bonus
+        - Loss: -1 to -6 rep (based on PnL %)
+        - Win streak bonus: +1 per consecutive win (up to +5 extra)
+        - Loss streak penalty: -1 per consecutive loss (up to -3 extra)
+        """
         self.history.recent_results.append(outcome)
         if len(self.history.recent_results) > 50:
             self.history.recent_results.pop(0)
@@ -386,12 +403,20 @@ class TradingAgent:
             self.history.successful_trades += 1
             self.history.current_streak = max(1, self.history.current_streak + 1)
             self.history.win_streaks = max(self.history.win_streaks, self.history.current_streak)
-            self.reputation = min(100, self.reputation + min(5, outcome.pnl_pct * 0.5))
+            # Better rewards: +2 base + up to +8 from PnL%
+            base_reward = min(10, 2 + outcome.pnl_pct * 0.8)
+            # Win streak bonus: +1 per consecutive win (max +5)
+            streak_bonus = min(5, max(0, self.history.current_streak - 1))
+            self.reputation = min(100, self.reputation + base_reward + streak_bonus)
         else:
             self.history.failed_trades += 1
             self.history.current_streak = min(-1, self.history.current_streak - 1)
             self.history.loss_streaks = max(self.history.loss_streaks, abs(self.history.current_streak))
-            self.reputation = max(0, self.reputation - min(8, abs(outcome.pnl_pct) * 0.8))
+            # Gentler penalties: -1 base + up to -5 from PnL%
+            base_penalty = min(6, 1 + abs(outcome.pnl_pct) * 0.5)
+            # Loss streak extra: -1 per consecutive loss (max -3)
+            streak_penalty = min(3, max(0, abs(self.history.current_streak) - 1))
+            self.reputation = max(0, self.reputation - base_penalty - streak_penalty)
 
         self.history.total_pnl += outcome.pnl
         self.history.peak_reputation = max(self.reputation, self.history.peak_reputation)

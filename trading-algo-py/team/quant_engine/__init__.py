@@ -48,6 +48,12 @@ class QuantSnapshot:
     hurst: float = 0.5              # Hurst exponent (>0.5=trending, <0.5=mean-reverting)
     irp_deviation: float = 0.0      # Interest rate parity deviation
     pip_range_percentile: float = 0.5
+    # Mean reversion tests
+    mr_score: int = 50              # Combined mean-reversion score (0-100)
+    mr_regime: str = "neutral"      # "mean_reverting", "neutral", "trending"
+    half_life: float = 0.0          # OU half-life in periods
+    vr_ratio: float = 1.0           # Variance ratio (VR<1=MR, VR>1=trending)
+    ou_theta: float = 0.0           # OU speed of reversion
 
 
 @dataclass
@@ -394,6 +400,29 @@ class QuantEngine:
         if len(closes) >= 50 and self._tick_count % 10 == 0:
             hurst = _hurst_exponent(closes[-200:])
 
+        # Mean reversion tests (recompute every 10 ticks)
+        mr_score = 50
+        mr_regime = "neutral"
+        mr_half_life = 0.0
+        vr_ratio = 1.0
+        ou_theta = 0.0
+        if len(closes) >= 50 and self._tick_count % 10 == 0:
+            from shared.indicators import combined_mean_reversion_score
+            mr_result = combined_mean_reversion_score(closes[-200:])
+            mr_score = mr_result["score"]
+            mr_regime = mr_result["regime"]
+            mr_half_life = mr_result["half_life"].get("half_life", 0)
+            vr_ratio = mr_result["vr"].get("vr", 1.0)
+            ou_theta = mr_result["ou"].get("theta", 0)
+        elif symbol in self._snapshots:
+            # Reuse previous values
+            prev = self._snapshots[symbol]
+            mr_score = prev.mr_score
+            mr_regime = prev.mr_regime
+            mr_half_life = prev.half_life
+            vr_ratio = prev.vr_ratio
+            ou_theta = prev.ou_theta
+
         # Interest rate parity deviation
         irp_dev = self._irp_deviation(symbol, price)
 
@@ -411,6 +440,11 @@ class QuantEngine:
             hurst=hurst,
             irp_deviation=irp_dev,
             pip_range_percentile=pip_pct,
+            mr_score=mr_score,
+            mr_regime=mr_regime,
+            half_life=mr_half_life,
+            vr_ratio=vr_ratio,
+            ou_theta=ou_theta,
         )
         self._snapshots[symbol] = snapshot
         self._tick_count += 1
@@ -611,8 +645,10 @@ class QuantEngine:
         opt_conf = pp["confidence"]  # Optimizer's confidence in this pair
 
         # 1. Z-score mean reversion signal (per-pair optimized threshold)
-        if abs(snap.z_score) > entry_t and snap.hurst < 0.5:
-            # Mean-reverting regime + extreme z-score → fade it
+        # Use half-life + OU + VR tests instead of just Hurst
+        mr_confirmed = snap.mr_score >= 55 or snap.hurst < 0.5
+        if abs(snap.z_score) > entry_t and mr_confirmed:
+            # Mean-reverting regime confirmed by statistical tests → fade it
             action = SignalAction.BUY if snap.z_score < 0 else SignalAction.SELL
             conf = min(0.85, abs(snap.z_score) / 4)
             # Boost if both fast and slow agree
@@ -624,14 +660,25 @@ class QuantEngine:
                 conf += 0.05
             if opt_conf > 0.6:
                 conf += 0.05
-            conf = min(0.90, conf)
+            # Boost from mean reversion tests (HL + OU + VR)
+            if snap.mr_score >= 70:
+                conf += 0.10  # Strong MR confirmation
+            elif snap.mr_score >= 55:
+                conf += 0.05
+            # Boost if half-life is short (strong mean reversion)
+            if 0 < snap.half_life <= 15:
+                conf += 0.05
+            conf = min(0.95, conf)
             signals.append(Signal(
                 asset=asset, action=action, confidence=conf, price=snap.price,
                 timestamp=now, strategy="quant-z-score", timeframe="tick",
                 indicators={"z_score": snap.z_score, "z_fast": snap.z_score_fast,
                              "z_slow": snap.z_score_slow, "hurst": snap.hurst,
+                             "mr_score": snap.mr_score, "half_life": snap.half_life,
+                             "vr_ratio": snap.vr_ratio, "ou_theta": snap.ou_theta,
                              "entry_threshold": entry_t, "opt_confidence": opt_conf},
-                reason=f"Z={snap.z_score:.2f} > {entry_t:.2f} thresh, H={snap.hurst:.2f}, opt_conf={opt_conf:.2f}",
+                reason=(f"Z={snap.z_score:.2f} > {entry_t:.2f}, MR={snap.mr_score}/100 "
+                        f"({snap.mr_regime}), HL={snap.half_life:.0f}, VR={snap.vr_ratio:.3f}"),
             ))
 
         # 2. RSI divergence signal
@@ -756,15 +803,15 @@ class QuantEngine:
         sorted_snaps = sorted(snapshots.values(), key=lambda s: abs(s.z_score), reverse=True)
 
         lines.append(f"{'Symbol':<12} {'Price':>10} {'Z-fast':>7} {'Z-slow':>7} {'Z-avg':>7} "
-                      f"{'RSI':>5} {'Div':>6} {'Vol%':>6} {'Hurst':>6} {'IRP%':>6}")
-        lines.append("-" * 95)
+                      f"{'RSI':>5} {'Hurst':>6} {'MR':>4} {'HL':>5} {'VR':>6} {'Regime':<10}")
+        lines.append("-" * 105)
 
         for s in sorted_snaps[:20]:
             z_flag = " **" if abs(s.z_score) > 2.0 else ""
             lines.append(
                 f"{s.symbol:<12} {s.price:>10.5f} {s.z_score_fast:>+7.2f} {s.z_score_slow:>+7.2f} "
-                f"{s.z_score:>+7.2f} {s.rsi:>5.0f} {s.rsi_divergence:>+6.2f} "
-                f"{s.vol_percentile:>5.0%} {s.hurst:>6.2f} {s.irp_deviation:>+6.2f}{z_flag}"
+                f"{s.z_score:>+7.2f} {s.rsi:>5.0f} {s.hurst:>6.2f} {s.mr_score:>4d} "
+                f"{s.half_life:>5.0f} {s.vr_ratio:>6.3f} {s.mr_regime:<10}{z_flag}"
             )
 
         if pairs:

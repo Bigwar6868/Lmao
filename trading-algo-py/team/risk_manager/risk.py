@@ -111,7 +111,7 @@ class RiskManager:
             )
 
         # Minimum confidence check
-        if signal.confidence < 0.4:
+        if signal.confidence < 0.25:
             return RiskAssessment(
                 max_position_size=max_size, recommended_size=0,
                 stop_loss_price=stop_loss, take_profit_price=take_profit,

@@ -799,8 +799,8 @@ class TradingTeam(TeamBase):
         ranked = sorted(best_per_asset.values(), key=lambda x: x[1].confidence, reverse=True)
 
         # --- Phase 4: Risk-adjust based on CEO mode ---
-        confidence_floor = {"aggressive": 0.30, "normal": 0.40, "conservative": 0.55}.get(risk_mode, 0.40)
-        size_multiplier = {"aggressive": 1.3, "normal": 1.0, "conservative": 0.6}.get(risk_mode, 1.0)
+        confidence_floor = {"aggressive": 0.20, "normal": 0.30, "conservative": 0.45}.get(risk_mode, 0.30)
+        size_multiplier = {"aggressive": 1.5, "normal": 1.0, "conservative": 0.6}.get(risk_mode, 1.0)
 
         # --- Phase 5: Execute top signals ---
         executed = 0
