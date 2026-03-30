@@ -363,15 +363,58 @@ class TradingTeam(TeamBase):
     def update_prices(self, prices: dict[str, float]) -> None:
         pass  # Price updates handled in check_stops
 
-    def check_stops(self, prices: dict[str, float], atr_map: dict[str, float] | None = None) -> None:
-        """Check SL/TP and advanced stops (trailing, break-even, partial close)."""
+    def check_stops(self, prices: dict[str, float], atr_map: dict[str, float] | None = None,
+                     market_data_map: dict[str, MarketData] | None = None) -> None:
+        """Check SL/TP, advanced stops, and agent trade monitoring."""
         # Standard stop check (SL/TP hits)
         closed = self.executor.check_stops(prices)
 
-        # Notify filter engine about closed trades
+        # Notify filter engine and agents about closed trades
         for pos in closed:
             self.filter_engine.on_trade_closed(pos.asset.symbol, pos.realized_pnl)
             self.stop_manager.on_position_closed(pos.id)
+            # Notify owning agent
+            for agent in self._agents:
+                agent.on_trade_closed(pos.id)
+
+        # --- Agent trade monitoring ---
+        # Each agent reviews its open positions and recommends actions
+        for agent in self._agents:
+            if agent.status == "retired" or not agent.get_active_trades():
+                continue
+
+            actions = agent.monitor_trades(prices, market_data_map)
+            for action in actions:
+                if action["action"] == "hold":
+                    continue
+
+                pos_id = action["position_id"]
+
+                if action["action"] == "tighten" and "new_stop_loss" in action:
+                    # Agent wants to tighten stop — apply if paper mode
+                    if self.executor.mode != "live":
+                        for pos in self.executor.paper.positions:
+                            if pos.id == pos_id and pos.status == PositionStatus.OPEN:
+                                old_sl = pos.stop_loss
+                                pos.stop_loss = action["new_stop_loss"]
+                                log.info("Agent %s tightened SL: %s %.5f → %.5f (%s)",
+                                         agent.name, pos.asset.symbol,
+                                         old_sl or 0, action["new_stop_loss"], action["reason"])
+                                break
+
+                elif action["action"] == "close":
+                    # Agent recommends closing — execute close
+                    if self.executor.mode != "live":
+                        for pos in self.executor.paper.positions:
+                            if pos.id == pos_id and pos.status == PositionStatus.OPEN:
+                                price = prices.get(pos.asset.symbol, pos.current_price)
+                                self.executor.paper._close_position(pos, price, f"agent:{agent.name} {action['reason']}")
+                                agent.on_trade_closed(pos_id)
+                                self.filter_engine.on_trade_closed(pos.asset.symbol, pos.realized_pnl)
+                                log.info("Agent %s closed %s %s: %s (PnL=%.2f)",
+                                         agent.name, pos.side.value, pos.asset.symbol,
+                                         action["reason"], pos.realized_pnl)
+                                break
 
         # Advanced stop management (trailing, break-even, partial close)
         if atr_map and self.executor.mode != "live":
@@ -492,6 +535,21 @@ class TradingTeam(TeamBase):
                 portfolio = self.executor.get_portfolio()
                 source_name = agent.name if agent else "quant-engine"
                 agent_hits[source_name] = agent_hits.get(source_name, 0) + 1
+
+                # Register trade with agent for monitoring
+                position = result.get("position")
+                if agent and position:
+                    agent.register_trade(
+                        position_id=position.id,
+                        symbol=signal.asset.symbol,
+                        side=signal.action.value,
+                        entry_price=position.entry_price,
+                        quantity=position.quantity,
+                        stop_loss=risk.stop_loss_price,
+                        take_profit=risk.take_profit_price,
+                        strategy=signal.strategy,
+                    )
+
                 log.info(
                     "TRADE: %s %s @ %.5f (conf=%.2f, agent=%s, mode=%s, filter_mult=%.2f)",
                     signal.action.value, signal.asset.symbol, signal.price,

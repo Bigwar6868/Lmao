@@ -368,7 +368,7 @@ class TradingOrchestrator:
                 if atr_vals and atr_vals[-1] is not None:
                     atr_map[data.asset.symbol] = atr_vals[-1]
         if trading:
-            trading.check_stops(prices, atr_map=atr_map)
+            trading.check_stops(prices, atr_map=atr_map, market_data_map=market_data_map)
 
         # --- Step 7.5: Post-trade review — sync closed trades, update agent performance ---
         if hasattr(self, "post_trade_reviewer") and self.spawner:

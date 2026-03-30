@@ -168,8 +168,26 @@ class AgentNetwork:
 # ============================================================
 
 
+@dataclass
+class ActiveTrade:
+    """Tracks an open trade owned by an agent."""
+    position_id: str
+    symbol: str
+    side: str           # "BUY" or "SELL"
+    entry_price: float
+    quantity: float
+    stop_loss: float
+    take_profit: float
+    opened_at: int
+    strategy: str
+    peak_pnl: float = 0.0       # Best unrealized PnL seen
+    trough_pnl: float = 0.0     # Worst unrealized PnL seen
+    checks: int = 0             # How many times agent has reviewed this trade
+    last_action: str = "hold"   # hold, tighten, close
+
+
 class TradingAgent:
-    """Autonomous wrapper around a Strategy with reputation tracking."""
+    """Autonomous wrapper around a Strategy with reputation tracking and trade monitoring."""
 
     def __init__(
         self,
@@ -191,8 +209,152 @@ class TradingAgent:
         self.created_at = int(time.time() * 1000)
         self.history = AgentPerformanceHistory(last_evaluated_at=self.created_at)
 
+        # Trade monitoring — agent owns its positions
+        self._active_trades: dict[str, ActiveTrade] = {}  # position_id → ActiveTrade
+
         self.network.register(self.id)
         log.info("Agent created: %s (strategy=%s)", self.name, strategy.config.name)
+
+    # --- Trade ownership ---
+
+    def register_trade(self, position_id: str, symbol: str, side: str,
+                       entry_price: float, quantity: float,
+                       stop_loss: float, take_profit: float, strategy: str) -> None:
+        """Register a new trade this agent is responsible for monitoring."""
+        self._active_trades[position_id] = ActiveTrade(
+            position_id=position_id,
+            symbol=symbol,
+            side=side,
+            entry_price=entry_price,
+            quantity=quantity,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            opened_at=int(time.time() * 1000),
+            strategy=strategy,
+        )
+        log.debug("Agent %s now monitoring %s %s (id=%s)", self.name, side, symbol, position_id[:8])
+
+    def monitor_trades(self, prices: dict[str, float], market_data_map: dict | None = None) -> list[dict]:
+        """Review all active trades — agent decides: hold, tighten stop, or recommend close.
+
+        Returns list of trade actions the agent wants to take:
+          {"action": "hold|tighten|close", "position_id": ..., "reason": ..., ...}
+        """
+        if self.status == "retired":
+            return []
+
+        actions = []
+        closed_ids = []
+
+        for pos_id, trade in self._active_trades.items():
+            price = prices.get(trade.symbol)
+            if price is None:
+                continue
+
+            trade.checks += 1
+
+            # Calculate unrealized PnL
+            if trade.side == "BUY":
+                unrealized = (price - trade.entry_price) * trade.quantity
+                pnl_pct = ((price - trade.entry_price) / trade.entry_price) * 100
+            else:
+                unrealized = (trade.entry_price - price) * trade.quantity
+                pnl_pct = ((trade.entry_price - price) / trade.entry_price) * 100
+
+            # Track peak/trough
+            trade.peak_pnl = max(trade.peak_pnl, unrealized)
+            trade.trough_pnl = min(trade.trough_pnl, unrealized)
+
+            # --- Agent decision logic ---
+            action = self._decide_trade_action(trade, price, pnl_pct, market_data_map)
+            trade.last_action = action["action"]
+            actions.append(action)
+
+        # Remove closed trades from monitoring
+        for pos_id in closed_ids:
+            self._active_trades.pop(pos_id, None)
+
+        return actions
+
+    def _decide_trade_action(self, trade: ActiveTrade, current_price: float,
+                             pnl_pct: float, market_data_map: dict | None) -> dict:
+        """Agent's trade monitoring decision logic.
+
+        Rules:
+        1. If trade gave back >50% of peak profit → recommend tighten stop
+        2. If signal has reversed (strategy now says opposite) → recommend close
+        3. If trade has been open >100 checks with no progress → recommend close
+        4. Otherwise → hold
+        """
+        result = {
+            "action": "hold",
+            "position_id": trade.position_id,
+            "symbol": trade.symbol,
+            "pnl_pct": pnl_pct,
+            "checks": trade.checks,
+            "reason": "",
+        }
+
+        # Rule 1: Gave back too much profit — tighten stop
+        if trade.peak_pnl > 0 and pnl_pct > 0:
+            current_unrealized = pnl_pct  # simplified
+            peak_pct = (trade.peak_pnl / (trade.entry_price * trade.quantity)) * 100 if trade.quantity > 0 else 0
+            if peak_pct > 0.5 and current_unrealized < peak_pct * 0.5:
+                result["action"] = "tighten"
+                result["reason"] = f"Gave back profit: peak {peak_pct:.2f}% → now {pnl_pct:.2f}%"
+                # Suggest new SL at breakeven + small buffer
+                pip_val = 0.01 if "JPY" in trade.symbol else 0.0001
+                if trade.side == "BUY":
+                    result["new_stop_loss"] = trade.entry_price + (3 * pip_val)
+                else:
+                    result["new_stop_loss"] = trade.entry_price - (3 * pip_val)
+                return result
+
+        # Rule 2: Check if strategy signal has reversed
+        if market_data_map and trade.symbol in market_data_map:
+            try:
+                signals = self.strategy.analyze(market_data_map[trade.symbol])
+                for s in signals:
+                    if s.asset.symbol == trade.symbol and s.action.value != "HOLD":
+                        # Signal is opposite to our trade direction
+                        if (trade.side == "BUY" and s.action.value == "SELL") or \
+                           (trade.side == "SELL" and s.action.value == "BUY"):
+                            if s.confidence > 0.5:
+                                result["action"] = "close"
+                                result["reason"] = f"Signal reversed: {s.action.value} conf={s.confidence:.2f}"
+                                return result
+            except Exception:
+                pass
+
+        # Rule 3: Stale trade — open too long with no progress
+        if trade.checks > 100 and abs(pnl_pct) < 0.1:
+            result["action"] = "close"
+            result["reason"] = f"Stale trade: {trade.checks} checks, PnL {pnl_pct:+.2f}%"
+            return result
+
+        # Rule 4: Losing too much
+        if pnl_pct < -2.0:
+            result["action"] = "close"
+            result["reason"] = f"Excessive loss: {pnl_pct:.2f}%"
+            return result
+
+        result["reason"] = f"Holding: PnL {pnl_pct:+.2f}% (peak ${trade.peak_pnl:.2f})"
+        return result
+
+    def on_trade_closed(self, position_id: str) -> None:
+        """Remove a trade from monitoring when it's closed."""
+        trade = self._active_trades.pop(position_id, None)
+        if trade:
+            log.debug("Agent %s trade closed: %s %s (%d checks)",
+                      self.name, trade.side, trade.symbol, trade.checks)
+
+    def get_active_trades(self) -> list[ActiveTrade]:
+        return list(self._active_trades.values())
+
+    def get_active_trade_count(self) -> int:
+        return len(self._active_trades)
+
+    # --- Signal generation ---
 
     def analyze(self, data: Any, macro: Any = None) -> list:
         """Analyze market data and return signals scaled by reputation."""
