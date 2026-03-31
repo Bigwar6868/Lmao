@@ -18,6 +18,7 @@ import type { AssetInfo, Timeframe, Signal, MarketData, Candle } from './shared/
 import type { AgentId } from './shared/agent-types.js';
 import { wireMessagingEvents, messageDispatcher } from './shared/messaging.js';
 import { OllamaProvider } from './shared/agent-brain.js';
+import { QuantModuleManager } from './team/quant-modules/index.js';
 
 const log = createModuleLogger('orchestrator');
 
@@ -51,6 +52,9 @@ export class TradingSystem {
   private spawner!: AgentSpawner;
   private agents = new Map<AgentId, TradingAgent>();
   private strategies = new Map<string, import('./shared/types.js').Strategy>();
+
+  // Quant modules (IC decay, HMM regime, OU half-life, carry, crowding, etc.)
+  private quantModules = new QuantModuleManager();
 
   constructor() {
     // Attach live feed to network — shows agent communication in real-time
@@ -338,9 +342,34 @@ export class TradingSystem {
       marketData: marketDataMap, signals: allSignals, macro,
     });
 
+    // 2d. Quant Module Analysis — IC decay, HMM regime, OU half-life, optional modules
+    const prices = new Map<string, number>();
+    for (const [, data] of marketDataMap) {
+      if (data.candles.length > 0) {
+        prices.set(data.asset.symbol, data.candles[data.candles.length - 1].close);
+      }
+    }
+    const quantReport = await this.quantModules.runCycle(allSignals, marketDataMap, prices, macro);
+    const quantAdjustedSignals = quantReport.adjustedSignals;
+    printSystemEvent(`Quant analysis: regime=${quantReport.hmmRegime.currentState}, ${quantAdjustedSignals.length}/${allSignals.length} signals survived`);
+    console.log(QuantModuleManager.formatReport(quantReport));
+
+    // 2e. Carry factor: generate additional carry signals for forex pairs
+    const candlesMap = new Map<string, Candle[]>();
+    for (const [sym, data] of marketDataMap) candlesMap.set(sym, data.candles);
+    const carrySignals = this.quantModules.getCarrySignals(
+      [...marketDataMap.values()].map(d => d.asset),
+      candlesMap,
+      timeframe,
+    );
+    if (carrySignals.length > 0) {
+      quantAdjustedSignals.push(...carrySignals);
+      printSystemEvent(`Carry factor added ${carrySignals.length} signals`);
+    }
+
     // 3. Trading Team autonomously selects which assets to trade
-    printSystemEvent(`Research complete: ${marketDataMap.size} assets scanned, ${allSignals.length} signals found`);
-    const selectedAssets = this.tradingTeam.selectAssetsToTrade(marketDataMap, allSignals);
+    printSystemEvent(`Research complete: ${marketDataMap.size} assets scanned, ${quantAdjustedSignals.length} signals after quant analysis`);
+    const selectedAssets = this.tradingTeam.selectAssetsToTrade(marketDataMap, quantAdjustedSignals);
     printSystemEvent(`Trading Team selected ${selectedAssets.length}/${assets.length} assets to trade`);
     log.info({ selected: selectedAssets.length, universe: assets.length }, 'Trading Team selected assets');
 
@@ -352,12 +381,7 @@ export class TradingSystem {
     }
 
     // 5. Update prices + check stops (on ALL assets we have positions in)
-    const prices = new Map<string, number>();
-    for (const [, data] of marketDataMap) {
-      if (data.candles.length > 0) {
-        prices.set(data.asset.symbol, data.candles[data.candles.length - 1].close);
-      }
-    }
+    // (prices map already computed above for quant modules)
     await this.tradingTeam.checkStops(prices);
     this.tradingTeam.updatePrices(prices);
 
@@ -466,6 +490,13 @@ export class TradingSystem {
 
     const strategies = this.researchTeam.getStrategies();
     const results = await this.evolutionTeam.runAllBacktests(strategies, data.candles, asset, timeframe);
+
+    // Record trials for Deflated Sharpe Ratio computation
+    if (results) {
+      for (const result of results) {
+        this.quantModules.statValidator.recordTrial(result.dna.name, result.metrics.sharpeRatio);
+      }
+    }
 
     console.log(this.evolutionTeam.getLeaderboard());
     return results;
