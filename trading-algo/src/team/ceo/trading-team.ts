@@ -526,6 +526,11 @@ export class TradingTeam extends TeamBase {
     await this.executor.checkStops(prices);
   }
 
+  /** Sync initial capital from OANDA account balance */
+  async syncCapitalFromBroker(): Promise<boolean> {
+    return this.executor.syncCapitalFromBroker();
+  }
+
   getPortfolio() { return this.executor.getPortfolio(); }
   getPortfolioSummary(): string { return this.executor.getSummary(); }
 

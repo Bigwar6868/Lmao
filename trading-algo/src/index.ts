@@ -133,11 +133,20 @@ export class TradingSystem {
       },
     );
 
-    // 7. CEO sets available asset universe — Trading Team decides what to actually trade
+    // 7. Sync capital from OANDA account balance (if configured)
+    const synced = await this.tradingTeam.syncCapitalFromBroker();
+    if (synced) {
+      const portfolio = this.tradingTeam.getPortfolio();
+      printSystemEvent(`Capital synced from OANDA: $${portfolio.capital.toFixed(2)}`);
+    } else {
+      printSystemEvent(`Using config capital: $${config.initialCapital}`);
+    }
+
+    // 8. CEO sets available asset universe — Trading Team decides what to actually trade
     this.ceo.setActiveAssets(allAssets);
     this.ceo.setActiveStrategies(strategyList.map(s => s.name));
 
-    // 8. Event listeners
+    // 9. Event listeners
     eventBus.on('signal:generated', (event) => {
       log.debug({ signal: event.data }, 'Signal received');
     });
@@ -145,10 +154,10 @@ export class TradingSystem {
       log.info({ improvement: event.data }, 'Strategy evolved!');
     });
 
-    // 9. Wire messaging — dispatches evolution/signal/alert events to Claude + OpenClaw
+    // 10. Wire messaging — dispatches evolution/signal/alert events to Claude + OpenClaw
     wireMessagingEvents();
 
-    // 10. Start autonomous loops for all teams — 24/7 independent lifecycle
+    // 11. Start autonomous loops for all teams — 24/7 independent lifecycle
     this.startAllLoops();
 
     log.info({

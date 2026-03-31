@@ -17,6 +17,11 @@ export class Executor {
     log.info({ mode: 'live' }, 'Executor initialized');
   }
 
+  /** Sync initial capital from broker (OANDA) account balance */
+  async syncCapitalFromBroker(): Promise<boolean> {
+    return this.liveExecutor.syncCapitalFromBroker();
+  }
+
   async execute(signal: Signal, risk: RiskAssessment): Promise<TradeExecution> {
     return this.liveExecutor.executeTrade(signal, risk);
   }

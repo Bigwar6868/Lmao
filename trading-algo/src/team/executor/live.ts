@@ -52,6 +52,42 @@ export class LiveExecutor {
   }
 
   /**
+   * Sync initial capital from OANDA account balance.
+   * Call this once at startup so the system trades with real account size.
+   */
+  async syncCapitalFromBroker(): Promise<boolean> {
+    if (!this.oanda.isConfigured) {
+      log.warn('OANDA not configured — using config capital');
+      return false;
+    }
+
+    const summary = await this.oanda.getAccountSummary();
+    if (!summary || summary.balance <= 0) {
+      log.warn('Could not fetch OANDA balance — using config capital');
+      return false;
+    }
+
+    const oldCapital = this.config.initialCapital;
+    this.config.initialCapital = summary.balance;
+    this.portfolio.capital = summary.balance;
+    this.portfolio.availableCapital = summary.balance - summary.marginUsed;
+    this.peakEquity = summary.nav;
+
+    log.info({
+      source: 'OANDA',
+      currency: summary.currency,
+      balance: summary.balance,
+      nav: summary.nav,
+      unrealizedPl: summary.unrealizedPl,
+      marginUsed: summary.marginUsed,
+      openTrades: summary.openTradeCount,
+      oldCapital,
+    }, 'Capital synced from OANDA account');
+
+    return true;
+  }
+
+  /**
    * Initialize CCXT exchange connection for crypto trading.
    */
   private async initExchange(): Promise<void> {
@@ -199,9 +235,30 @@ export class LiveExecutor {
       await eventBus.emit('order:filled', filledOrder, 'live-executor');
       await eventBus.emit('position:opened', position, 'live-executor');
 
+      const riskReward = risk.riskRewardRatio;
+      const riskPct = risk.stopLossPrice > 0
+        ? (Math.abs(fillPrice - risk.stopLossPrice) / fillPrice * 100)
+        : 0;
+      const rewardPct = risk.takeProfitPrice > 0
+        ? (Math.abs(risk.takeProfitPrice - fillPrice) / fillPrice * 100)
+        : 0;
+
       log.info(
-        { symbol: signal.asset.symbol, side: 'buy', price: fillPrice, quantity, spread: signal.spread, strategy: signal.strategy },
-        'Live trade executed',
+        {
+          symbol: signal.asset.symbol,
+          side: 'buy',
+          price: fillPrice,
+          quantity,
+          positionSize: (totalCost / this.portfolio.capital * 100).toFixed(1) + '%',
+          stopLoss: risk.stopLossPrice || undefined,
+          takeProfit: risk.takeProfitPrice || undefined,
+          riskPct: riskPct.toFixed(2) + '%',
+          rewardPct: rewardPct.toFixed(2) + '%',
+          riskReward: riskReward.toFixed(2),
+          strategy: signal.strategy,
+          confidence: signal.confidence.toFixed(2),
+        },
+        'OPEN trade',
       );
 
       return { order: filledOrder, position, portfolio: this.portfolio, success: true };
@@ -235,9 +292,31 @@ export class LiveExecutor {
       await eventBus.emit('order:filled', filledOrder, 'live-executor');
       await eventBus.emit('position:closed', position, 'live-executor');
 
+      const pnlPct = position.entryPrice > 0
+        ? ((fillPrice - position.entryPrice) / position.entryPrice * 100)
+        : 0;
+      const holdingMs = position.closedAt! - position.openedAt;
+      const holdingHours = (holdingMs / 3600_000).toFixed(1);
+      const rr = position.stopLoss && position.stopLoss > 0
+        ? (pnl / (Math.abs(position.entryPrice - position.stopLoss) * position.quantity))
+        : undefined;
+
       log.info(
-        { symbol: signal.asset.symbol, side: 'sell', price: fillPrice, pnl: pnl.toFixed(2), strategy: signal.strategy },
-        'Live position closed',
+        {
+          symbol: signal.asset.symbol,
+          side: 'sell',
+          entryPrice: position.entryPrice,
+          exitPrice: fillPrice,
+          pnl: pnl.toFixed(2),
+          pnlPct: pnlPct.toFixed(2) + '%',
+          rMultiple: rr !== undefined ? rr.toFixed(2) + 'R' : 'N/A',
+          holdingTime: holdingHours + 'h',
+          strategy: signal.strategy,
+          reason: signal.reason,
+          portfolioPnl: this.portfolio.totalPnl.toFixed(2),
+          portfolioPnlPct: this.portfolio.totalPnlPct.toFixed(2) + '%',
+        },
+        pnl >= 0 ? 'CLOSE trade (WIN)' : 'CLOSE trade (LOSS)',
       );
 
       return { order: filledOrder, position, portfolio: this.portfolio, success: true };
@@ -313,14 +392,32 @@ export class LiveExecutor {
 
   getSummary(): string {
     const p = this.portfolio;
-    return [
+    const lines = [
       `=== Live Trading Summary ===`,
-      `Capital: $${p.capital.toFixed(2)}`,
+      `Capital: $${p.capital.toFixed(2)} (initial: $${this.config.initialCapital.toFixed(2)})`,
       `Available: $${p.availableCapital.toFixed(2)}`,
       `Open Positions: ${p.positions.length}`,
       `Total P&L: $${p.totalPnl.toFixed(2)} (${p.totalPnlPct.toFixed(2)}%)`,
       `Max Drawdown: ${p.maxDrawdown.toFixed(2)}%`,
       `Total Orders: ${this.orderHistory.length}`,
-    ].join('\n');
+    ];
+
+    // Show open positions with P&L % and R:R
+    if (p.positions.length > 0) {
+      lines.push('', 'Open Positions:');
+      for (const pos of p.positions) {
+        const pnlPct = pos.entryPrice > 0
+          ? ((pos.currentPrice - pos.entryPrice) / pos.entryPrice * 100)
+          : 0;
+        const rr = pos.stopLoss && pos.stopLoss > 0
+          ? (pos.unrealizedPnl / (Math.abs(pos.entryPrice - pos.stopLoss) * pos.quantity))
+          : undefined;
+        lines.push(
+          `  ${pos.asset.symbol.padEnd(12)} ${pos.side.toUpperCase()} @ ${pos.entryPrice.toFixed(5)} → ${pos.currentPrice.toFixed(5)} | P&L: ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}% ($${pos.unrealizedPnl.toFixed(2)}) | R: ${rr !== undefined ? rr.toFixed(2) : 'N/A'} | SL: ${pos.stopLoss?.toFixed(5) ?? 'none'} TP: ${pos.takeProfit?.toFixed(5) ?? 'none'}`,
+        );
+      }
+    }
+
+    return lines.join('\n');
   }
 }
