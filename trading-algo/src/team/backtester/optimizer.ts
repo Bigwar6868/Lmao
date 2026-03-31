@@ -169,7 +169,11 @@ export class StrategyOptimizer {
   calculateFitness(sharpe: number, winRate: number, maxDrawdownPct: number, totalTrades = 0): number {
     // Strategies with 0 trades get worst-possible fitness — doing nothing isn't a strategy
     if (totalTrades === 0) return -Infinity;
+    // Handle NaN Sharpe gracefully
+    const safeSharpe = isNaN(sharpe) ? -1 : sharpe;
     const drawdownPenalty = maxDrawdownPct > 0 ? maxDrawdownPct : 1;
-    return (sharpe * winRate * 100) / drawdownPenalty;
+    // Reward trade frequency (diminishing returns) to encourage signal generation
+    const tradeBonus = Math.min(2, Math.log2(totalTrades + 1));
+    return (safeSharpe * winRate * 100 * tradeBonus) / drawdownPenalty;
   }
 }

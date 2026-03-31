@@ -4,8 +4,15 @@ import { createModuleLogger } from './logger.js';
 const log = createModuleLogger('synthetic-data');
 
 /**
- * Generates realistic synthetic OHLCV candle data.
- * Used as fallback when external APIs are unreachable.
+ * Market regime types for synthetic data generation.
+ * Alternating regimes create realistic patterns that strategies can exploit.
+ */
+type Regime = 'trending_up' | 'trending_down' | 'mean_reverting' | 'breakout' | 'choppy';
+
+/**
+ * Generates realistic synthetic OHLCV candle data with regime-switching.
+ * Creates trending, mean-reverting, and breakout patterns that
+ * trading strategies can profitably exploit.
  */
 export function generateSyntheticCandles(
   symbol: string,
@@ -24,8 +31,79 @@ export function generateSyntheticCandles(
   let price = startPrice;
   let baseTime = Date.now() - count * intervalMs;
 
+  // Regime-switching: divide candles into segments with different behavior
+  const regimeLength = Math.max(30, Math.floor(count / 8)); // ~60 bars per regime
+  let regime: Regime = 'trending_up';
+  let regimeBar = 0;
+  let regimeMean = price; // anchor for mean-reversion
+  let squeezeCountdown = 0; // bars of low-vol before breakout
+
+  // Seed regime sequence deterministically from symbol hash
+  const regimes: Regime[] = ['trending_up', 'mean_reverting', 'trending_down', 'choppy', 'breakout', 'trending_up', 'mean_reverting', 'trending_down'];
+  let regimeIdx = Math.abs(hashCode(symbol)) % regimes.length;
+
   for (let i = 0; i < count; i++) {
-    const change = (Math.random() - 0.48) * volatility; // slight upward bias
+    // Switch regime periodically
+    if (regimeBar >= regimeLength) {
+      regimeBar = 0;
+      regimeIdx = (regimeIdx + 1) % regimes.length;
+      regime = regimes[regimeIdx];
+      regimeMean = price;
+      if (regime === 'breakout') squeezeCountdown = Math.floor(regimeLength * 0.6);
+    }
+    regime = regimes[regimeIdx];
+    regimeBar++;
+
+    let change: number;
+    let volMultiplier = 1.0;
+    const baseVolume = getDefaultVolume(symbol);
+
+    switch (regime) {
+      case 'trending_up': {
+        // Strong uptrend: positive drift + moderate noise
+        const drift = volatility * 0.35; // clear upward bias
+        change = drift + (Math.random() - 0.5) * volatility * 0.7;
+        volMultiplier = 0.8 + Math.random() * 0.6; // normal volume
+        break;
+      }
+      case 'trending_down': {
+        // Strong downtrend: negative drift + moderate noise
+        const drift = -volatility * 0.30;
+        change = drift + (Math.random() - 0.5) * volatility * 0.7;
+        volMultiplier = 0.8 + Math.random() * 0.6;
+        break;
+      }
+      case 'mean_reverting': {
+        // Price oscillates around regimeMean with mean-reversion pull
+        const deviation = (price - regimeMean) / regimeMean;
+        const pullback = -deviation * 0.15; // pull back toward mean
+        change = pullback + (Math.random() - 0.5) * volatility * 0.8;
+        volMultiplier = 0.6 + Math.random() * 0.4; // lower volume
+        break;
+      }
+      case 'breakout': {
+        if (squeezeCountdown > 0) {
+          // Squeeze phase: very low volatility (Bollinger Band compression)
+          change = (Math.random() - 0.5) * volatility * 0.2;
+          volMultiplier = 0.3 + Math.random() * 0.3; // very low volume
+          squeezeCountdown--;
+        } else {
+          // Breakout phase: explosive move with high volume
+          const direction = Math.random() > 0.4 ? 1 : -1; // slight bullish bias
+          change = direction * volatility * (0.5 + Math.random() * 0.8);
+          volMultiplier = 2.0 + Math.random() * 2.0; // volume spike
+        }
+        break;
+      }
+      case 'choppy':
+      default: {
+        // Random walk with no clear direction
+        change = (Math.random() - 0.5) * volatility;
+        volMultiplier = 0.5 + Math.random() * 1.0;
+        break;
+      }
+    }
+
     const open = price;
     const close = price * (1 + change);
 
@@ -34,8 +112,7 @@ export function generateSyntheticCandles(
     const high = Math.max(open, close) * (1 + highExtra);
     const low = Math.min(open, close) * (1 - lowExtra);
 
-    const baseVolume = getDefaultVolume(symbol);
-    const volume = baseVolume * (0.5 + Math.random());
+    const volume = baseVolume * volMultiplier;
 
     candles.push({
       timestamp: baseTime + i * intervalMs,
@@ -51,6 +128,15 @@ export function generateSyntheticCandles(
 
   log.info({ symbol, count }, 'Generated synthetic candle data');
   return candles;
+}
+
+/** Simple string hash for deterministic regime seeding */
+function hashCode(s: string): number {
+  let hash = 0;
+  for (let i = 0; i < s.length; i++) {
+    hash = ((hash << 5) - hash + s.charCodeAt(i)) | 0;
+  }
+  return hash;
 }
 
 function round(v: number): number {

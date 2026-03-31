@@ -52,9 +52,9 @@ export const config = {
   maxSectorExposure: 0.3,
 
   // Evolution
-  populationSize: 15,
-  mutationRate: 0.15,
-  elitismCount: 2,
+  populationSize: 20,
+  mutationRate: 0.30,
+  elitismCount: 3,
   generationInterval: 24 * 60 * 60 * 1000, // 24h
 
   // Data — works in both ESM (import.meta.url) and CJS (bundled) mode

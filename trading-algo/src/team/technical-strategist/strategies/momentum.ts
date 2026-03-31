@@ -37,10 +37,11 @@ export class MomentumStrategy implements Strategy {
       generation: 0,
       parentId: null,
       params: {
-        fastEma: 9,
+        fastEma: 8,
         slowEma: 21,
         rsiPeriod: 14,
-        rsiThreshold: 50,
+        rsiThreshold: 45,
+        trendEma: 50,
       },
       fitness: 0,
       createdAt: Date.now(),

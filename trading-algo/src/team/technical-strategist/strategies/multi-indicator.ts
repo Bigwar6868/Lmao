@@ -45,8 +45,8 @@ export class MultiIndicatorStrategy implements Strategy {
       parentId: null,
       params: {
         rsiPeriod: 14,
-        rsiOversold: 30,
-        rsiOverbought: 70,
+        rsiOversold: 35,
+        rsiOverbought: 65,
         macdFast: 12,
         macdSlow: 26,
         macdSignal: 9,
@@ -55,6 +55,7 @@ export class MultiIndicatorStrategy implements Strategy {
         rsiWeight: 0.3,
         macdWeight: 0.4,
         bbWeight: 0.3,
+        trendEma: 50,
       },
       fitness: 0,
       createdAt: Date.now(),
@@ -189,8 +190,8 @@ export class MultiIndicatorStrategy implements Strategy {
       holdScore,
     };
 
-    // Require >60% consensus (not just bare majority)
-    const consensusThreshold = totalWeight * 0.6;
+    // Require >50% consensus for signal generation
+    const consensusThreshold = totalWeight * 0.5;
     const maxScore = Math.max(buyScore, sellScore, holdScore);
     let action: SignalAction;
 

@@ -79,7 +79,7 @@ export class ForexDataFetcher {
     // In cloud mode or no real API key, skip network entirely
     if (config.cloudMode || !this.apiKey || this.apiKey === 'demo') {
       log.info({ pair }, 'No API key — using synthetic forex data');
-      return generateSyntheticCandles(pair, 100, { intervalMs: 86_400_000, volatility: 0.005 });
+      return generateSyntheticCandles(pair, 500, { intervalMs: 86_400_000, volatility: 0.005 });
     }
 
     await this.throttle();
@@ -103,7 +103,7 @@ export class ForexDataFetcher {
       if (!series) {
         const note: string = data['Note'] ?? data['Information'] ?? 'Unknown error';
         log.warn({ pair, note }, 'Alpha Vantage returned no forex data — using synthetic');
-        return generateSyntheticCandles(pair, 100, { intervalMs: 86_400_000, volatility: 0.005 });
+        return generateSyntheticCandles(pair, 500, { intervalMs: 86_400_000, volatility: 0.005 });
       }
 
       const candles = this.parseTimeSeries(series);
@@ -111,7 +111,7 @@ export class ForexDataFetcher {
       return candles;
     } catch (err) {
       log.warn({ pair, error: (err as Error).message }, 'Forex API failed — using synthetic data');
-      return generateSyntheticCandles(pair, 100, { intervalMs: 86_400_000, volatility: 0.005 });
+      return generateSyntheticCandles(pair, 500, { intervalMs: 86_400_000, volatility: 0.005 });
     }
   }
 
@@ -133,7 +133,7 @@ export class ForexDataFetcher {
     // In cloud mode or no real API key, skip network entirely
     if (config.cloudMode || !this.apiKey || this.apiKey === 'demo') {
       log.info({ pair, interval }, 'No API key — using synthetic intraday forex data');
-      return generateSyntheticCandles(pair, 100, { intervalMs: intervalMsMap[interval] ?? 3_600_000, volatility: 0.005 });
+      return generateSyntheticCandles(pair, 500, { intervalMs: intervalMsMap[interval] ?? 3_600_000, volatility: 0.005 });
     }
 
     await this.throttle();
@@ -159,7 +159,7 @@ export class ForexDataFetcher {
       if (!series) {
         const note: string = data['Note'] ?? data['Information'] ?? 'Unknown error';
         log.warn({ pair, interval, note }, 'Alpha Vantage returned no forex data — using synthetic');
-        return generateSyntheticCandles(pair, 100, { intervalMs: intervalMsMap[interval] ?? 3_600_000, volatility: 0.005 });
+        return generateSyntheticCandles(pair, 500, { intervalMs: intervalMsMap[interval] ?? 3_600_000, volatility: 0.005 });
       }
 
       const candles = this.parseTimeSeries(series);
@@ -167,7 +167,7 @@ export class ForexDataFetcher {
       return candles;
     } catch (err) {
       log.warn({ pair, error: (err as Error).message }, 'Forex intraday API failed — using synthetic data');
-      return generateSyntheticCandles(pair, 100, { intervalMs: intervalMsMap[interval] ?? 3_600_000, volatility: 0.005 });
+      return generateSyntheticCandles(pair, 500, { intervalMs: intervalMsMap[interval] ?? 3_600_000, volatility: 0.005 });
     }
   }
 }

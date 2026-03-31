@@ -75,8 +75,8 @@ export class StrategyEvolver {
 
     for (const key of keysToMutate) {
       const oldValue = mutated.params[key];
-      // Random perturbation: ±5% to ±20%
-      const perturbation = 1 + (Math.random() * 0.3 - 0.15); // 0.85 to 1.15
+      // Random perturbation: ±10% to ±30% for more aggressive exploration
+      const perturbation = 1 + (Math.random() * 0.6 - 0.3); // 0.70 to 1.30
       let newValue = oldValue * perturbation;
 
       // Keep integer parameters as integers

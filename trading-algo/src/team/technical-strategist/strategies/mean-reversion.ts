@@ -40,8 +40,9 @@ export class MeanReversionStrategy implements Strategy {
         bbPeriod: 20,
         bbStdDev: 2,
         rsiPeriod: 14,
-        oversold: 30,
-        overbought: 70,
+        oversold: 35,
+        overbought: 65,
+        trendEma: 50,
       },
       fitness: 0,
       createdAt: Date.now(),
@@ -85,7 +86,7 @@ export class MeanReversionStrategy implements Strategy {
     // Regime filter: mean-reversion works best when price is NEAR the trend EMA
     // (range-bound). Skip when price is far from trend (strong trend = don't fade it).
     const trendDeviation = Math.abs(price - currentTrend) / currentTrend;
-    const isRangeBound = trendDeviation < 0.03; // within 3% of 200 EMA = range-bound
+    const isRangeBound = trendDeviation < 0.05; // within 5% of trend EMA = range-bound
 
     const bandwidth = upperBand - lowerBand;
     const indicators: Record<string, number> = {

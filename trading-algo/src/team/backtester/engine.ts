@@ -35,10 +35,10 @@ export class BacktestEngine {
     config: BacktestConfig
   ): Promise<BacktestResult> {
     // Apply overrides from config
-    this.slAtrMult = config.slAtrMult ?? this.slAtrMult_DEFAULT;
-    this.tpAtrMult = config.tpAtrMult ?? this.tpAtrMult_DEFAULT;
-    this.maxHoldBars = config.maxHoldBars ?? this.maxHoldBars_DEFAULT;
-    this.maxPositionPct = config.maxPositionPct ?? this.maxPositionPct_DEFAULT;
+    this.slAtrMult = config.slAtrMult ?? this.SL_ATR_MULT_DEFAULT;
+    this.tpAtrMult = config.tpAtrMult ?? this.TP_ATR_MULT_DEFAULT;
+    this.maxHoldBars = config.maxHoldBars ?? this.MAX_HOLD_BARS_DEFAULT;
+    this.maxPositionPct = config.maxPositionPct ?? this.MAX_POSITION_PCT_DEFAULT;
     const state: BacktestState = {
       equity: config.initialCapital,
       cash: config.initialCapital,
@@ -121,6 +121,7 @@ export class BacktestEngine {
     atr: number,
   ): void {
     if (signal.action === 'HOLD') return;
+    if (!signal.confidence || isNaN(signal.confidence) || signal.confidence <= 0) return;
 
     const { commission, slippage } = config;
     const fillPrice = signal.action === 'BUY'
@@ -139,9 +140,9 @@ export class BacktestEngine {
       }
 
       // Position sizing: confidence-scaled, capped at MAX_POSITION_PCT
+      // Use Kelly-inspired sizing: higher confidence → larger position
       const equity = this.calculateEquity(state, candle);
-      const confidenceScale = 0.5 + signal.confidence * 0.5; // 0.5 at min, 1.0 at max
-      const allocationPct = Math.min(signal.confidence * 0.3 * confidenceScale, this.maxPositionPct);
+      const allocationPct = Math.min(signal.confidence * signal.confidence * 0.5, this.maxPositionPct);
       const allocation = equity * allocationPct;
       if (allocation < 10) return; // Skip tiny positions
 

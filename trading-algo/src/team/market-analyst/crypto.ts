@@ -76,7 +76,7 @@ export class CryptoDataFetcher {
   async fetchOHLCV(
     symbol: string,
     timeframe: Timeframe,
-    limit = 200,
+    limit = 500,
   ): Promise<Candle[]> {
     // In cloud mode or no API key, skip network entirely — go straight to synthetic data
     if (config.cloudMode || !config.binanceApiKey) {
