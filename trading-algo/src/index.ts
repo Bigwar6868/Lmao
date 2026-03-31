@@ -335,7 +335,7 @@ export class TradingSystem {
     // 2b. Feed brain context to teams + CEO — they use this for autonomous thinking
     this.researchTeam.updateBrainContext(marketDataMap, allSignals, macro);
     this.tradingTeam.updateBrainContext(marketDataMap, allSignals, macro);
-    this.ceo.updateContext(this.tradingTeam.getPortfolio(), macro);
+    // CEO context updated after quant analysis (step 2d) so it includes quant report
 
     // 2c. Research team thinks about what it found (AI-powered if available)
     await this.researchTeam.brain.thinkAsync('What do the current signals tell us about market conditions?', {
@@ -353,6 +353,9 @@ export class TradingSystem {
     const quantAdjustedSignals = quantReport.adjustedSignals;
     printSystemEvent(`Quant analysis: regime=${quantReport.hmmRegime.currentState}, ${quantAdjustedSignals.length}/${allSignals.length} signals survived`);
     console.log(QuantModuleManager.formatReport(quantReport));
+
+    // Feed quant report to CEO — now the CEO brain knows about regime, IC health, modules, etc.
+    this.ceo.updateContext(this.tradingTeam.getPortfolio(), macro, quantReport);
 
     // 2e. Carry factor: generate additional carry signals for forex pairs
     const candlesMap = new Map<string, Candle[]>();
@@ -439,9 +442,22 @@ export class TradingSystem {
 
       // CEO brain strategic review (if LLM available)
       if (this.ceo.brain.getLLMProvider()) {
+        const regimeStr = quantReport.hmmRegime.currentState;
+        const activeModules = quantReport.moduleDecisions.filter(d => d.active).map(d => d.module);
+        const icWarnings = quantReport.icHealth.filter(h => h.health !== 'healthy');
         const ceoThought = await this.ceo.think(
-          `Cycle ${cycle} review. ${tradeSignals.length} signals, ${executed} executed, ${rejected} rejected. Should we adjust strategy allocation, risk limits, or team focus?`,
-          { review: review.summary, executed, rejected, signalCount: tradeSignals.length },
+          `Cycle ${cycle} review. Regime: ${regimeStr}. ${tradeSignals.length} signals, ${executed} executed, ${rejected} rejected. Active quant modules: ${activeModules.join(', ') || 'none'}. ${icWarnings.length > 0 ? `IC warnings: ${icWarnings.map(w => `${w.strategy}=${w.health}`).join(', ')}. ` : ''}Should we adjust strategy allocation, risk limits, or team focus?`,
+          {
+            review: review.summary,
+            executed,
+            rejected,
+            signalCount: tradeSignals.length,
+            regime: regimeStr,
+            regimeProbabilities: quantReport.hmmRegime.probabilities,
+            icHealth: quantReport.icHealth.map(h => ({ strategy: h.strategy, health: h.health })),
+            activeQuantModules: activeModules,
+            mrSuitablePairs: quantReport.halfLifeResults.filter(r => r.suitableForMR).length,
+          },
         );
         console.log(`\n=== CEO Brain Review (${this.ceo.brain.getLLMProvider()!.name}/${this.ceo.brain.getLLMProvider()!.model}) ===`);
         console.log(`Decision: ${ceoThought.decision}`);

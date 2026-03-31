@@ -20,6 +20,7 @@ import { generateId } from '../../shared/utils.js';
 import { createModuleLogger } from '../../shared/logger.js';
 import { AgentBrain, OllamaProvider, type LLMProvider, type BrainContext, type ThoughtChain } from '../../shared/agent-brain.js';
 import type { AgentNetwork } from '../agent-network/network.js';
+import type { QuantReport } from '../quant-modules/manager.js';
 
 const log = createModuleLogger('ceo');
 
@@ -40,6 +41,7 @@ export class CEOAgent {
   readonly brain: AgentBrain;
   private lastPortfolio?: Portfolio;
   private lastMacro?: MacroEnvironment;
+  private lastQuantReport?: QuantReport;
 
   constructor(network: AgentNetwork, llmProvider?: LLMProvider) {
     this.id = generateId();
@@ -67,9 +69,10 @@ export class CEOAgent {
   }
 
   /** Update the context the CEO brain uses for decisions */
-  updateContext(portfolio?: Portfolio, macro?: MacroEnvironment): void {
+  updateContext(portfolio?: Portfolio, macro?: MacroEnvironment, quantReport?: QuantReport): void {
     if (portfolio) this.lastPortfolio = portfolio;
     if (macro) this.lastMacro = macro;
+    if (quantReport) this.lastQuantReport = quantReport;
   }
 
   /** Build rich context for the CEO brain */
@@ -92,6 +95,27 @@ export class CEOAgent {
         teamCount: this.teams.size,
         pendingRequests: this.pendingRequests.length,
         activeStrategies: this.activeStrategies,
+        // Quant module intelligence
+        ...(this.lastQuantReport ? {
+          quantModules: {
+            regime: this.lastQuantReport.hmmRegime.currentState,
+            regimeConfidence: this.lastQuantReport.hmmRegime.probabilities,
+            regimeTransition: this.lastQuantReport.hmmRegime.transitionAlert,
+            icHealth: this.lastQuantReport.icHealth.map(h => ({
+              strategy: h.strategy,
+              health: h.health,
+              rollingIC6m: h.rollingIC6m,
+              rollingIC12m: h.rollingIC12m,
+            })),
+            mrSuitablePairs: this.lastQuantReport.halfLifeResults.filter(r => r.suitableForMR).length,
+            totalPairsAnalyzed: this.lastQuantReport.halfLifeResults.length,
+            activeModules: this.lastQuantReport.moduleDecisions.filter(d => d.active).map(d => d.module),
+            signalsBeforeQuant: this.lastQuantReport.adjustedSignals.length,
+            crowdedAssets: this.lastQuantReport.crowding?.filter(c => c.isCrowded).length ?? 0,
+            carrySignals: this.lastQuantReport.carrySignals?.length ?? 0,
+            cotExtremes: this.lastQuantReport.cotSignals?.length ?? 0,
+          },
+        } : {}),
         ...extra,
       },
     };
@@ -548,6 +572,58 @@ export class CEOAgent {
       lines.push(`  ${team.name} (${team.id}): ${team.memberIds.length} agents`);
       if (prompt) {
         lines.push(`    Mission: ${prompt.mission}`);
+      }
+    }
+
+    // Quant module intelligence
+    if (this.lastQuantReport) {
+      const qr = this.lastQuantReport;
+      lines.push('');
+      lines.push('Quant Intelligence:');
+      lines.push(`  Regime: ${qr.hmmRegime.currentState.toUpperCase()} (bull: ${(qr.hmmRegime.probabilities.bull * 100).toFixed(0)}%, bear: ${(qr.hmmRegime.probabilities.bear * 100).toFixed(0)}%, sideways: ${(qr.hmmRegime.probabilities.sideways * 100).toFixed(0)}%)`);
+      if (qr.hmmRegime.transitionAlert) {
+        lines.push(`  Regime Alert: ${qr.hmmRegime.transitionAlert}`);
+      }
+
+      // IC Health summary
+      const healthyCt = qr.icHealth.filter(h => h.health === 'healthy').length;
+      const warningCt = qr.icHealth.filter(h => h.health === 'warning').length;
+      const criticalCt = qr.icHealth.filter(h => h.health === 'critical' || h.health === 'dead').length;
+      if (qr.icHealth.length > 0) {
+        lines.push(`  Strategy Health: ${healthyCt} healthy, ${warningCt} warning, ${criticalCt} critical`);
+        for (const h of qr.icHealth) {
+          if (h.health !== 'healthy') {
+            lines.push(`    [${h.health.toUpperCase()}] ${h.strategy} — IC6m: ${h.rollingIC6m?.toFixed(3) ?? 'N/A'}, IC12m: ${h.rollingIC12m?.toFixed(3) ?? 'N/A'}`);
+          }
+        }
+      }
+
+      // OU Half-Life
+      const mrSuitable = qr.halfLifeResults.filter(r => r.suitableForMR).length;
+      if (qr.halfLifeResults.length > 0) {
+        lines.push(`  Mean-Reversion: ${mrSuitable}/${qr.halfLifeResults.length} pairs suitable (OU half-life)`);
+      }
+
+      // Active optional modules
+      const activeModules = qr.moduleDecisions.filter(d => d.active).map(d => d.module);
+      const inactiveModules = qr.moduleDecisions.filter(d => !d.active).map(d => d.module);
+      lines.push(`  Active Modules: ${activeModules.length > 0 ? activeModules.join(', ') : 'none'}`);
+      if (inactiveModules.length > 0) {
+        lines.push(`  Inactive: ${inactiveModules.join(', ')}`);
+      }
+
+      // Carry/COT highlights
+      if (qr.carrySignals && qr.carrySignals.length > 0) {
+        lines.push(`  Carry Signals: ${qr.carrySignals.length} active`);
+      }
+      if (qr.cotSignals && qr.cotSignals.length > 0) {
+        lines.push(`  COT Extremes: ${qr.cotSignals.length} pairs with extreme positioning`);
+      }
+      if (qr.crowding) {
+        const crowded = qr.crowding.filter(c => c.isCrowded);
+        if (crowded.length > 0) {
+          lines.push(`  Crowding: ${crowded.length} assets crowded (position size reduced)`);
+        }
       }
     }
 
