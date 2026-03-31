@@ -13,6 +13,8 @@ import { BreakoutStrategy } from './strategies/breakout.js';
 import { MultiIndicatorStrategy } from './strategies/multi-indicator.js';
 import { HybridStrategy, createRandomHybrid } from './strategies/hybrid.js';
 import { MultiTimeframeStrategy } from './strategies/multi-timeframe.js';
+import { LondonBreakoutStrategy } from './strategies/london-breakout.js';
+import { TSMOMStrategy } from './strategies/tsmom.js';
 
 export { MomentumStrategy } from './strategies/momentum.js';
 export { MeanReversionStrategy } from './strategies/mean-reversion.js';
@@ -20,6 +22,8 @@ export { BreakoutStrategy } from './strategies/breakout.js';
 export { MultiIndicatorStrategy } from './strategies/multi-indicator.js';
 export { HybridStrategy, createRandomHybrid } from './strategies/hybrid.js';
 export { MultiTimeframeStrategy } from './strategies/multi-timeframe.js';
+export { LondonBreakoutStrategy } from './strategies/london-breakout.js';
+export { TSMOMStrategy } from './strategies/tsmom.js';
 export * from './types.js';
 export * from './indicators.js';
 export { generateSignal } from './signals.js';
@@ -37,6 +41,8 @@ export class TechnicalStrategist {
     const multiIndicator = new MultiIndicatorStrategy();
     const hybrid = new HybridStrategy(undefined, 'hybrid');
     const multiTimeframe = new MultiTimeframeStrategy();
+    const londonBreakout = new LondonBreakoutStrategy();
+    const tsmom = new TSMOMStrategy();
 
     this.strategies.set(momentum.name, momentum);
     this.strategies.set(meanReversion.name, meanReversion);
@@ -44,6 +50,8 @@ export class TechnicalStrategist {
     this.strategies.set(multiIndicator.name, multiIndicator);
     this.strategies.set(hybrid.name, hybrid);
     this.strategies.set(multiTimeframe.name, multiTimeframe);
+    this.strategies.set(londonBreakout.name, londonBreakout);
+    this.strategies.set(tsmom.name, tsmom);
 
     log.info({ strategies: [...this.strategies.keys()] }, 'TechnicalStrategist initialized');
   }

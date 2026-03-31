@@ -3,14 +3,26 @@ import type { BacktestState, BacktestPosition, CompletedTrade } from './types.js
 import { calculateMetrics } from './metrics.js';
 import { generateId } from '../../shared/utils.js';
 import { createModuleLogger } from '../../shared/logger.js';
+import { ATR } from '../technical-strategist/indicators.js';
 
 const log = createModuleLogger('backtester');
 
 /**
  * Event-driven backtesting engine.
  * Iterates through historical candles, runs strategy, simulates fills.
+ *
+ * Key features:
+ * - ATR-based stop-loss and take-profit on every position
+ * - Trailing stop that locks in profits
+ * - Kelly-inspired position sizing based on signal confidence
+ * - Time-based exit (max 48 bars holding period)
  */
 export class BacktestEngine {
+  private readonly SL_ATR_MULT = 2.0;    // Stop loss = 2x ATR
+  private readonly TP_ATR_MULT = 3.0;    // Take profit = 3x ATR
+  private readonly MAX_HOLD_BARS = 48;   // Force exit after 48 bars (~2 days on 1h)
+  private readonly MAX_POSITION_PCT = 0.15; // Max 15% of equity per trade
+
   async run(
     strategy: Strategy,
     candles: Candle[],
@@ -32,12 +44,21 @@ export class BacktestEngine {
       50 // minimum lookback
     );
 
+    // Pre-compute ATR for the full candle series
+    const atrResult = ATR(candles, 14);
+
     for (let i = lookback; i < candles.length; i++) {
       const currentCandle = candles[i];
       const historicalCandles = candles.slice(0, i + 1);
 
-      // Check stops
+      // Check stops (SL, TP, trailing)
       this.checkStops(state, currentCandle);
+
+      // Time-based exit: close positions held too long
+      this.checkTimeExit(state, currentCandle, i, candles);
+
+      // Update trailing stops
+      this.updateTrailingStops(state, currentCandle, atrResult.values[i]);
 
       // Update position prices
       this.updatePositions(state, currentCandle);
@@ -52,9 +73,10 @@ export class BacktestEngine {
 
       const signals = await strategy.analyze(marketData);
 
-      // Process signals
+      // Process signals — pass ATR for stop calculation
+      const currentAtr = atrResult.values[i];
       for (const signal of signals) {
-        this.processSignal(state, signal, currentCandle, config);
+        this.processSignal(state, signal, currentCandle, config, currentAtr);
       }
 
       // Record equity
@@ -84,7 +106,8 @@ export class BacktestEngine {
     state: BacktestState,
     signal: Signal,
     candle: Candle,
-    config: BacktestConfig
+    config: BacktestConfig,
+    atr: number,
   ): void {
     if (signal.action === 'HOLD') return;
 
@@ -104,15 +127,22 @@ export class BacktestEngine {
         this.closePosition(state, shortPos, fillPrice, candle.timestamp);
       }
 
-      // Open long position (use 10% of available cash by default, or signal confidence-weighted)
-      const allocationPct = Math.min(signal.confidence * 0.2, 0.1);
-      const allocation = state.cash * allocationPct;
+      // Position sizing: confidence-scaled, capped at MAX_POSITION_PCT
+      const equity = this.calculateEquity(state, candle);
+      const confidenceScale = 0.5 + signal.confidence * 0.5; // 0.5 at min, 1.0 at max
+      const allocationPct = Math.min(signal.confidence * 0.3 * confidenceScale, this.MAX_POSITION_PCT);
+      const allocation = equity * allocationPct;
       if (allocation < 10) return; // Skip tiny positions
 
       const quantity = allocation / fillPrice;
       const cost = fillPrice * quantity * (1 + commission);
 
       if (cost > state.cash) return;
+
+      // Compute ATR-based stops
+      const validAtr = atr > 0 ? atr : fillPrice * 0.01; // fallback: 1% of price
+      const stopLoss = fillPrice - validAtr * this.SL_ATR_MULT;
+      const takeProfit = fillPrice + validAtr * this.TP_ATR_MULT;
 
       state.cash -= cost;
       state.positions.push({
@@ -121,7 +151,11 @@ export class BacktestEngine {
         entryPrice: fillPrice,
         quantity,
         entryTime: candle.timestamp,
+        stopLoss,
+        takeProfit,
+        trailingStop: stopLoss, // starts at initial SL
         strategy: signal.strategy,
+        entryBar: this.findBarIndex(candle),
       });
 
       state.orders.push({
@@ -192,41 +226,95 @@ export class BacktestEngine {
   }
 
   private checkStops(state: BacktestState, candle: Candle): void {
-    const toClose: BacktestPosition[] = [];
+    const toClose: Array<{ pos: BacktestPosition; price: number }> = [];
 
     for (const pos of state.positions) {
-      if (pos.stopLoss !== undefined) {
-        if (pos.side === 'buy' && candle.low <= pos.stopLoss) {
-          toClose.push(pos);
+      // Use trailing stop if it's tighter than original SL
+      const effectiveSl = pos.trailingStop !== undefined
+        ? Math.max(pos.trailingStop, pos.stopLoss ?? 0)
+        : pos.stopLoss;
+
+      if (effectiveSl !== undefined) {
+        if (pos.side === 'buy' && candle.low <= effectiveSl) {
+          // Stop hit — exit at stop price (or open if gap down)
+          toClose.push({ pos, price: Math.min(candle.open, effectiveSl) });
           continue;
         }
-        if (pos.side === 'sell' && candle.high >= pos.stopLoss) {
-          toClose.push(pos);
+        if (pos.side === 'sell' && candle.high >= effectiveSl) {
+          toClose.push({ pos, price: Math.max(candle.open, effectiveSl) });
           continue;
         }
       }
       if (pos.takeProfit !== undefined) {
         if (pos.side === 'buy' && candle.high >= pos.takeProfit) {
-          toClose.push(pos);
+          // TP hit — exit at TP price (or open if gap up)
+          toClose.push({ pos, price: Math.max(candle.open, pos.takeProfit) });
           continue;
         }
         if (pos.side === 'sell' && candle.low <= pos.takeProfit) {
-          toClose.push(pos);
+          toClose.push({ pos, price: Math.min(candle.open, pos.takeProfit) });
           continue;
         }
       }
     }
 
-    for (const pos of toClose) {
-      const exitPrice = pos.stopLoss !== undefined
-        ? (pos.side === 'buy' ? Math.min(candle.open, pos.stopLoss) : Math.max(candle.open, pos.stopLoss))
-        : (pos.takeProfit ?? candle.close);
-      this.closePosition(state, pos, exitPrice, candle.timestamp);
+    for (const { pos, price } of toClose) {
+      this.closePosition(state, pos, price, candle.timestamp);
     }
   }
 
-  private updatePositions(state: BacktestState, candle: Candle): void {
-    // Nothing to update in backtest mode — positions are tracked by entry price
+  /**
+   * Update trailing stop: moves SL up as price moves in our favor.
+   * Trail = highest price seen - 1.5x ATR (tighter than initial 2x ATR SL).
+   */
+  private updateTrailingStops(state: BacktestState, candle: Candle, atr: number): void {
+    if (!atr || atr <= 0) return;
+
+    for (const pos of state.positions) {
+      if (pos.side === 'buy') {
+        const newTrail = candle.high - atr * 1.5;
+        if (pos.trailingStop === undefined || newTrail > pos.trailingStop) {
+          // Only move trailing stop UP, never down
+          if (newTrail > pos.entryPrice) {
+            // Only activate trail once we're in profit
+            pos.trailingStop = newTrail;
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Time-based exit: close positions held longer than MAX_HOLD_BARS.
+   * Prevents hanging positions from consuming capital.
+   */
+  private checkTimeExit(state: BacktestState, candle: Candle, barIndex: number, allCandles: Candle[]): void {
+    const toClose: BacktestPosition[] = [];
+    for (const pos of state.positions) {
+      const barsHeld = this.countBarsHeld(pos, candle, allCandles);
+      if (barsHeld >= this.MAX_HOLD_BARS) {
+        toClose.push(pos);
+      }
+    }
+    for (const pos of toClose) {
+      this.closePosition(state, pos, candle.close, candle.timestamp);
+    }
+  }
+
+  private countBarsHeld(pos: BacktestPosition, currentCandle: Candle, allCandles: Candle[]): number {
+    // Estimate bars held from timestamps
+    if (allCandles.length < 2) return 0;
+    const avgInterval = (allCandles[allCandles.length - 1].timestamp - allCandles[0].timestamp) / (allCandles.length - 1);
+    if (avgInterval <= 0) return 0;
+    return Math.floor((currentCandle.timestamp - pos.entryTime) / avgInterval);
+  }
+
+  private findBarIndex(_candle: Candle): number {
+    return 0; // Not critical — entryTime is used for time exits
+  }
+
+  private updatePositions(_state: BacktestState, _candle: Candle): void {
+    // Nothing to update — positions tracked by entry price
   }
 
   private calculateEquity(state: BacktestState, candle: Candle): number {

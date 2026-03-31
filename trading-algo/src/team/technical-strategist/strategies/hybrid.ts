@@ -119,7 +119,7 @@ export class HybridStrategy implements Strategy {
     // 1. RSI vote
     const rsiPeriod = Math.round(p['rsiPeriod'] ?? 14);
     const rsiResult = RSI(candles, rsiPeriod);
-    const rsiValue = rsiResult[rsiResult.length - 1]?.value ?? 50;
+    const rsiValue = rsiResult.values[candles.length - 1] ?? 50;
     const rsiBuy = p['rsiBuyThreshold'] ?? 30;
     const rsiSell = p['rsiSellThreshold'] ?? 70;
 
@@ -134,8 +134,8 @@ export class HybridStrategy implements Strategy {
     const slowPeriod = Math.round(p['slowEmaPeriod'] ?? 21);
     const fastEma = EMA(candles, fastPeriod);
     const slowEma = EMA(candles, slowPeriod);
-    const fastVal = fastEma[fastEma.length - 1]?.value ?? 0;
-    const slowVal = slowEma[slowEma.length - 1]?.value ?? 0;
+    const fastVal = fastEma.values[candles.length - 1] ?? 0;
+    const slowVal = slowEma.values[candles.length - 1] ?? 0;
 
     let emaVote = 0;
     if (slowVal > 0) {
@@ -151,28 +151,30 @@ export class HybridStrategy implements Strategy {
       slowPeriod: Math.round(p['macdSlowPeriod'] ?? 26),
       signalPeriod: Math.round(p['macdSignalPeriod'] ?? 9),
     });
-    const macdLatest = macdResult[macdResult.length - 1];
+    const lastIdx = candles.length - 1;
+    const macdHistogram = macdResult.histogram[lastIdx] ?? 0;
     let macdVote = 0;
-    if (macdLatest && latestPrice > 0) {
-      const histogram = macdLatest.histogram;
-      macdVote = Math.max(-1, Math.min(1, (histogram / latestPrice) * 100));
+    if (latestPrice > 0) {
+      macdVote = Math.max(-1, Math.min(1, (macdHistogram / latestPrice) * 100));
     }
 
-    votes.push({ name: 'macd', vote: macdVote, weight: p['macdWeight'] ?? 0.2, value: macdLatest?.histogram ?? 0 });
+    votes.push({ name: 'macd', vote: macdVote, weight: p['macdWeight'] ?? 0.2, value: macdHistogram });
 
     // 4. Bollinger Bands vote
     const bbPeriod = Math.round(p['bollingerPeriod'] ?? 20);
     const bbStdDev = p['bollingerStdDev'] ?? 2;
     const bbResult = BollingerBands(candles, bbPeriod, bbStdDev);
-    const bbLatest = bbResult[bbResult.length - 1];
+    const bbUpper = bbResult.upper[lastIdx] ?? 0;
+    const bbLower = bbResult.lower[lastIdx] ?? 0;
+    const bbMiddle = bbResult.middle[lastIdx] ?? 0;
     let bbVote = 0;
-    if (bbLatest && bbLatest.upper > bbLatest.lower) {
-      const range = bbLatest.upper - bbLatest.lower;
-      const position = (latestPrice - bbLatest.lower) / range; // 0 at lower, 1 at upper
+    if (bbUpper > bbLower) {
+      const range = bbUpper - bbLower;
+      const position = (latestPrice - bbLower) / range; // 0 at lower, 1 at upper
       bbVote = -(position - 0.5) * 2; // -1 at upper band (sell), +1 at lower band (buy)
     }
 
-    votes.push({ name: 'bollinger', vote: bbVote, weight: p['bollingerWeight'] ?? 0.15, value: bbLatest?.middle ?? 0 });
+    votes.push({ name: 'bollinger', vote: bbVote, weight: p['bollingerWeight'] ?? 0.15, value: bbMiddle });
 
     // 5. Volume vote — confirms or dampens signals
     const avgVolume = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;

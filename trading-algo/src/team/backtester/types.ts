@@ -17,6 +17,8 @@ export interface BacktestPosition {
   entryTime: number;
   stopLoss?: number;
   takeProfit?: number;
+  trailingStop?: number;
+  entryBar?: number;
   strategy: string;
 }
 
