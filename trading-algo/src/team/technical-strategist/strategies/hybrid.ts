@@ -195,6 +195,10 @@ export class HybridStrategy implements Strategy {
     }
 
     const normalizedVote = totalWeight > 0 ? weightedVoteSum / totalWeight : 0;
+    // Guard against NaN from indicator edge cases (NaN propagates through votes)
+    if (isNaN(normalizedVote)) {
+      return [generateSignal(asset, 'HOLD', 0, latestPrice, this.name, timeframe, {}, 'Invalid indicator data — skipping')];
+    }
     const rawConfidence = Math.abs(normalizedVote) * volumeMultiplier;
 
     // Apply macro adjustment

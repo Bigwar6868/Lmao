@@ -492,7 +492,7 @@ export class TradingSystem {
             rejected,
             signalCount: tradeSignals.length,
             regime: regimeStr,
-            regimeProbabilities: quantReport.hmmRegime.probabilities,
+            regimeProbabilities: quantReport.hmmRegime.stateProbabilities,
             icHealth: quantReport.icHealth.map(h => ({ strategy: h.strategy, health: h.health })),
             activeQuantModules: activeModules,
             mrSuitablePairs: quantReport.halfLifeResults.filter(r => r.suitableForMR).length,

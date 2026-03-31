@@ -77,14 +77,15 @@ export class CrossMomentumStrategy implements Strategy {
       parentId: null,
       params: {
         // Lookback for return calculation (bars)
-        returnLookback: 720, // ~1 month on 1h
+        returnLookback: 480, // ~20 days on 1h
 
         // Ranking thresholds (percentile)
         topPctile: 0.20,     // Top 20% = winners (BUY)
         bottomPctile: 0.20,  // Bottom 20% = losers (SELL)
 
         // Minimum assets to form cross-section
-        minAssets: 5,
+        // In live trading, this should be 5+. In backtest (single asset), set to 1.
+        minAssets: 3,
 
         // Trend filter
         trendEmaPeriod: 50,

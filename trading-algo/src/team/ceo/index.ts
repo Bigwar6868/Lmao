@@ -127,7 +127,7 @@ export class CEOAgent {
         ...(this.lastQuantReport ? {
           quantModules: {
             regime: this.lastQuantReport.hmmRegime.currentState,
-            regimeConfidence: this.lastQuantReport.hmmRegime.probabilities,
+            regimeConfidence: this.lastQuantReport.hmmRegime.stateProbabilities,
             regimeTransition: this.lastQuantReport.hmmRegime.transitionAlert,
             icHealth: this.lastQuantReport.icHealth.map(h => ({
               strategy: h.strategy,
@@ -847,7 +847,7 @@ export class CEOAgent {
       const qr = this.lastQuantReport;
       lines.push('');
       lines.push('Quant Intelligence:');
-      lines.push(`  Regime: ${qr.hmmRegime.currentState.toUpperCase()} (bull: ${(qr.hmmRegime.probabilities.bull * 100).toFixed(0)}%, bear: ${(qr.hmmRegime.probabilities.bear * 100).toFixed(0)}%, sideways: ${(qr.hmmRegime.probabilities.sideways * 100).toFixed(0)}%)`);
+      lines.push(`  Regime: ${qr.hmmRegime.currentState.toUpperCase()} (bull: ${((qr.hmmRegime.stateProbabilities.bull ?? 0) * 100).toFixed(0)}%, bear: ${((qr.hmmRegime.stateProbabilities.bear ?? 0) * 100).toFixed(0)}%, sideways: ${((qr.hmmRegime.stateProbabilities.sideways ?? 0) * 100).toFixed(0)}%)`);
       if (qr.hmmRegime.transitionAlert) {
         lines.push(`  Regime Alert: ${qr.hmmRegime.transitionAlert}`);
       }
