@@ -18,16 +18,27 @@ const log = createModuleLogger('backtester');
  * - Time-based exit (max 48 bars holding period)
  */
 export class BacktestEngine {
-  private readonly SL_ATR_MULT = 2.0;    // Stop loss = 2x ATR
-  private readonly TP_ATR_MULT = 3.0;    // Take profit = 3x ATR
-  private readonly MAX_HOLD_BARS = 48;   // Force exit after 48 bars (~2 days on 1h)
-  private readonly MAX_POSITION_PCT = 0.15; // Max 15% of equity per trade
+  private readonly SL_ATR_MULT_DEFAULT = 2.0;
+  private readonly TP_ATR_MULT_DEFAULT = 3.0;
+  private readonly MAX_HOLD_BARS_DEFAULT = 48;
+  private readonly MAX_POSITION_PCT_DEFAULT = 0.15;
+
+  // Per-run overrides (set from config)
+  private slAtrMult = 2.0;
+  private tpAtrMult = 3.0;
+  private maxHoldBars = 48;
+  private maxPositionPct = 0.15;
 
   async run(
     strategy: Strategy,
     candles: Candle[],
     config: BacktestConfig
   ): Promise<BacktestResult> {
+    // Apply overrides from config
+    this.slAtrMult = config.slAtrMult ?? this.slAtrMult_DEFAULT;
+    this.tpAtrMult = config.tpAtrMult ?? this.tpAtrMult_DEFAULT;
+    this.maxHoldBars = config.maxHoldBars ?? this.maxHoldBars_DEFAULT;
+    this.maxPositionPct = config.maxPositionPct ?? this.maxPositionPct_DEFAULT;
     const state: BacktestState = {
       equity: config.initialCapital,
       cash: config.initialCapital,
@@ -130,7 +141,7 @@ export class BacktestEngine {
       // Position sizing: confidence-scaled, capped at MAX_POSITION_PCT
       const equity = this.calculateEquity(state, candle);
       const confidenceScale = 0.5 + signal.confidence * 0.5; // 0.5 at min, 1.0 at max
-      const allocationPct = Math.min(signal.confidence * 0.3 * confidenceScale, this.MAX_POSITION_PCT);
+      const allocationPct = Math.min(signal.confidence * 0.3 * confidenceScale, this.maxPositionPct);
       const allocation = equity * allocationPct;
       if (allocation < 10) return; // Skip tiny positions
 
@@ -141,8 +152,8 @@ export class BacktestEngine {
 
       // Compute ATR-based stops
       const validAtr = atr > 0 ? atr : fillPrice * 0.01; // fallback: 1% of price
-      const stopLoss = fillPrice - validAtr * this.SL_ATR_MULT;
-      const takeProfit = fillPrice + validAtr * this.TP_ATR_MULT;
+      const stopLoss = fillPrice - validAtr * this.slAtrMult;
+      const takeProfit = fillPrice + validAtr * this.tpAtrMult;
 
       state.cash -= cost;
       state.positions.push({
@@ -292,7 +303,7 @@ export class BacktestEngine {
     const toClose: BacktestPosition[] = [];
     for (const pos of state.positions) {
       const barsHeld = this.countBarsHeld(pos, candle, allCandles);
-      if (barsHeld >= this.MAX_HOLD_BARS) {
+      if (barsHeld >= this.maxHoldBars) {
         toClose.push(pos);
       }
     }

@@ -184,6 +184,14 @@ export interface BacktestConfig {
   initialCapital: number;
   commission: number;
   slippage: number;
+  /** Override: max position size as fraction of equity (default 0.15 = 15%) */
+  maxPositionPct?: number;
+  /** Override: stop-loss ATR multiplier (default 2.0) */
+  slAtrMult?: number;
+  /** Override: take-profit ATR multiplier (default 3.0) */
+  tpAtrMult?: number;
+  /** Override: max holding period in bars (default 48) */
+  maxHoldBars?: number;
 }
 
 export interface BacktestResult {

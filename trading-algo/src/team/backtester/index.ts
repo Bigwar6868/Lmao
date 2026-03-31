@@ -32,6 +32,10 @@ export class Backtester {
       initialCapital: options?.initialCapital ?? config.initialCapital,
       commission: options?.commission ?? 0.001, // 0.1% default
       slippage: options?.slippage ?? 0.0005,    // 0.05% default
+      maxPositionPct: options?.maxPositionPct,
+      slAtrMult: options?.slAtrMult,
+      tpAtrMult: options?.tpAtrMult,
+      maxHoldBars: options?.maxHoldBars,
     };
 
     log.info(
