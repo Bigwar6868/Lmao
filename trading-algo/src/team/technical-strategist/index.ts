@@ -15,6 +15,9 @@ import { HybridStrategy, createRandomHybrid } from './strategies/hybrid.js';
 import { MultiTimeframeStrategy } from './strategies/multi-timeframe.js';
 import { LondonBreakoutStrategy } from './strategies/london-breakout.js';
 import { TSMOMStrategy } from './strategies/tsmom.js';
+import { CryptoTSMOMStrategy } from './strategies/crypto-tsmom.js';
+import { GoldTrendStrategy } from './strategies/gold-trend.js';
+import { CrossMomentumStrategy } from './strategies/cross-momentum.js';
 
 export { MomentumStrategy } from './strategies/momentum.js';
 export { MeanReversionStrategy } from './strategies/mean-reversion.js';
@@ -24,6 +27,9 @@ export { HybridStrategy, createRandomHybrid } from './strategies/hybrid.js';
 export { MultiTimeframeStrategy } from './strategies/multi-timeframe.js';
 export { LondonBreakoutStrategy } from './strategies/london-breakout.js';
 export { TSMOMStrategy } from './strategies/tsmom.js';
+export { CryptoTSMOMStrategy } from './strategies/crypto-tsmom.js';
+export { GoldTrendStrategy } from './strategies/gold-trend.js';
+export { CrossMomentumStrategy } from './strategies/cross-momentum.js';
 export * from './types.js';
 export * from './indicators.js';
 export { generateSignal } from './signals.js';
@@ -43,6 +49,9 @@ export class TechnicalStrategist {
     const multiTimeframe = new MultiTimeframeStrategy();
     const londonBreakout = new LondonBreakoutStrategy();
     const tsmom = new TSMOMStrategy();
+    const cryptoTsmom = new CryptoTSMOMStrategy();
+    const goldTrend = new GoldTrendStrategy();
+    const crossMomentum = new CrossMomentumStrategy();
 
     this.strategies.set(momentum.name, momentum);
     this.strategies.set(meanReversion.name, meanReversion);
@@ -52,6 +61,9 @@ export class TechnicalStrategist {
     this.strategies.set(multiTimeframe.name, multiTimeframe);
     this.strategies.set(londonBreakout.name, londonBreakout);
     this.strategies.set(tsmom.name, tsmom);
+    this.strategies.set(cryptoTsmom.name, cryptoTsmom);
+    this.strategies.set(goldTrend.name, goldTrend);
+    this.strategies.set(crossMomentum.name, crossMomentum);
 
     log.info({ strategies: [...this.strategies.keys()] }, 'TechnicalStrategist initialized');
   }
