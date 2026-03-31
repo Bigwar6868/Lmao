@@ -4,7 +4,7 @@ import { AgentNetwork } from './team/agent-network/network.js';
 import { TradingAgent } from './team/agent-network/trading-agent.js';
 import { AgentSpawner } from './team/agent-network/spawner.js';
 import { DecayDetector } from './team/agent-network/decay-detector.js';
-import { CEOAgent } from './team/ceo/index.js';
+import { CEOAgent, type ProfitabilityReview } from './team/ceo/index.js';
 import { TradingTeam, type TradeReviewResult } from './team/ceo/trading-team.js';
 import { ResearchTeam } from './team/ceo/research-team.js';
 import { RiskTeam } from './team/ceo/risk-team.js';
@@ -214,10 +214,12 @@ export class TradingSystem {
    */
   private async assignTeamPrompts(): Promise<void> {
     await this.ceo.setTeamPrompt('trading',
-      'Autonomously decide what to trade and when. Maximize risk-adjusted returns.',
+      'MAKE THE TEAM PROFITABLE. Autonomously decide what to trade and when. Maximize risk-adjusted returns.',
       [
+        'Only take high-conviction trades — quality over quantity',
         'Select the best assets to trade based on research data and market conditions',
         'Review and optimize strategy after every trade',
+        'Disable strategies that consistently lose money',
         'Review own performance periodically and self-adjust',
         'Request data from Research Team as needed',
         'Report trading activity and P&L to CEO',
@@ -439,7 +441,7 @@ export class TradingSystem {
       this.spawner.evolveUnderperformers();
     }
 
-    // 8. Trading team self-review every 10 cycles + CEO strategic review
+    // 8. Trading team self-review every 10 cycles + CEO profitability review + strategic review
     if (cycle % 10 === 0) {
       const review = this.tradingTeam.reviewPerformance();
       console.log(`\n=== Trade Self-Review (Cycle ${cycle}) ===`);
@@ -449,15 +451,43 @@ export class TradingSystem {
         review.adjustments.forEach(a => console.log(`  - ${a}`));
       }
 
+      // CEO PROFITABILITY REVIEW — Mission #1: Make the team profitable
+      const strategies = this.researchTeam.getStrategies();
+      const profReview = this.ceo.profitabilityReview(
+        this.tradingTeam.getPortfolio(),
+        strategies,
+      );
+      console.log(CEOAgent.formatProfitabilityReview(profReview));
+
+      // If strategies were disabled, update active strategies list
+      if (profReview.disabled.length > 0 || profReview.reEnabled.length > 0) {
+        const enabledStrategies = strategies.filter(s => s.config.enabled).map(s => s.name);
+        this.ceo.setActiveStrategies(enabledStrategies);
+        printSystemEvent(`CEO updated active strategies: ${enabledStrategies.join(', ')}`);
+      }
+
       // CEO brain strategic review (if LLM available)
       if (this.ceo.brain.getLLMProvider()) {
         const regimeStr = quantReport.hmmRegime.currentState;
         const activeModules = quantReport.moduleDecisions.filter(d => d.active).map(d => d.module);
         const icWarnings = quantReport.icHealth.filter(h => h.health !== 'healthy');
         const ceoThought = await this.ceo.think(
-          `Cycle ${cycle} review. Regime: ${regimeStr}. ${tradeSignals.length} signals, ${executed} executed, ${rejected} rejected. Active quant modules: ${activeModules.join(', ') || 'none'}. ${icWarnings.length > 0 ? `IC warnings: ${icWarnings.map(w => `${w.strategy}=${w.health}`).join(', ')}. ` : ''}Should we adjust strategy allocation, risk limits, or team focus?`,
+          `Cycle ${cycle} review. MISSION: MAKE THE TEAM PROFITABLE. Overall PnL: $${profReview.overallPnl.toFixed(2)} (${profReview.isProfitable ? 'PROFITABLE' : 'UNPROFITABLE'}). Win rate: ${(profReview.overallWinRate * 100).toFixed(0)}%. Regime: ${regimeStr}. ${tradeSignals.length} signals, ${executed} executed, ${rejected} rejected. ${profReview.disabled.length > 0 ? `Disabled: ${profReview.disabled.join(', ')}. ` : ''}${profReview.topPerformer ? `Top: ${profReview.topPerformer}. ` : ''}Active quant modules: ${activeModules.join(', ') || 'none'}. ${icWarnings.length > 0 ? `IC warnings: ${icWarnings.map(w => `${w.strategy}=${w.health}`).join(', ')}. ` : ''}What actions should I take to improve profitability?`,
           {
             review: review.summary,
+            profitabilityReview: {
+              overallPnl: profReview.overallPnl,
+              isProfitable: profReview.isProfitable,
+              winRate: profReview.overallWinRate,
+              strategies: profReview.strategyPerformance.map(s => ({
+                name: s.strategy,
+                pnl: s.totalPnl,
+                winRate: s.winRate,
+                trades: s.totalTrades,
+                enabled: s.enabled,
+              })),
+              recommendations: profReview.recommendations,
+            },
             executed,
             rejected,
             signalCount: tradeSignals.length,

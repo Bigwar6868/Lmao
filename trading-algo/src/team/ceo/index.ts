@@ -15,12 +15,40 @@ import type {
   AgentMessage,
   DiscussionThread,
 } from '../../shared/agent-types.js';
-import type { AssetInfo, Portfolio, MacroEnvironment } from '../../shared/types.js';
+import type { AssetInfo, Portfolio, MacroEnvironment, Strategy } from '../../shared/types.js';
 import { generateId } from '../../shared/utils.js';
 import { createModuleLogger } from '../../shared/logger.js';
 import { AgentBrain, OllamaProvider, type LLMProvider, type BrainContext, type ThoughtChain } from '../../shared/agent-brain.js';
 import type { AgentNetwork } from '../agent-network/network.js';
 import type { QuantReport } from '../quant-modules/manager.js';
+
+/** Per-strategy performance tracked by the CEO */
+export interface StrategyPerformance {
+  strategy: string;
+  totalTrades: number;
+  wins: number;
+  losses: number;
+  winRate: number;
+  totalPnl: number;
+  avgPnl: number;
+  maxDrawdown: number;
+  enabled: boolean;
+  disabledReason?: string;
+  lastReviewedAt: number;
+}
+
+/** Result of CEO profitability review */
+export interface ProfitabilityReview {
+  overallPnl: number;
+  overallWinRate: number;
+  strategyPerformance: StrategyPerformance[];
+  disabled: string[];
+  reEnabled: string[];
+  topPerformer: string | null;
+  worstPerformer: string | null;
+  isProfitable: boolean;
+  recommendations: string[];
+}
 
 const log = createModuleLogger('ceo');
 
@@ -78,7 +106,7 @@ export class CEOAgent {
   /** Build rich context for the CEO brain */
   private getBrainContext(extra?: Record<string, unknown>): BrainContext {
     return {
-      mission: 'Oversee all 5 teams. Maximize risk-adjusted returns while preserving capital.',
+      mission: 'MISSION #1: MAKE THE TEAM PROFITABLE. Disable losing strategies, double down on winners. Maximize risk-adjusted returns while preserving capital.',
       portfolio: this.lastPortfolio ? {
         capital: this.lastPortfolio.capital,
         totalPnl: this.lastPortfolio.totalPnl,
@@ -521,6 +549,239 @@ export class CEOAgent {
   getCycleCount(): number { return this.cycleCount; }
 
   // ----------------------------------------------------------------
+  // PROFITABILITY MISSION — CEO's #1 priority
+  // ----------------------------------------------------------------
+
+  /** Track which strategies are disabled by the CEO */
+  private disabledStrategies = new Set<string>();
+
+  /** Minimum trades before the CEO judges a strategy */
+  private readonly MIN_TRADES_TO_JUDGE = 5;
+
+  /** Consecutive loss threshold to disable a strategy */
+  private readonly MAX_LOSS_STREAK_BEFORE_DISABLE = 8;
+
+  /** Negative P&L % of capital threshold to disable */
+  private readonly DISABLE_PNL_THRESHOLD = -0.03; // -3% of capital
+
+  /**
+   * CEO's primary mission: review all strategy profitability and take action.
+   * Disables losers, re-enables recovered strategies, reports rankings.
+   *
+   * Call this every N cycles from the orchestrator.
+   */
+  profitabilityReview(portfolio: Portfolio, strategies: Strategy[]): ProfitabilityReview {
+    const closedPositions = portfolio.positions.filter(p => p.status === 'closed');
+    const capital = portfolio.capital;
+
+    // 1. Aggregate per-strategy stats
+    const stratMap = new Map<string, { trades: number; wins: number; pnl: number; pnls: number[] }>();
+    for (const pos of closedPositions) {
+      const s = stratMap.get(pos.strategy) ?? { trades: 0, wins: 0, pnl: 0, pnls: [] };
+      s.trades++;
+      if (pos.realizedPnl > 0) s.wins++;
+      s.pnl += pos.realizedPnl;
+      s.pnls.push(pos.realizedPnl);
+      stratMap.set(pos.strategy, s);
+    }
+
+    const perfList: StrategyPerformance[] = [];
+    const disabled: string[] = [];
+    const reEnabled: string[] = [];
+
+    for (const strategy of strategies) {
+      const stats = stratMap.get(strategy.name);
+      const trades = stats?.trades ?? 0;
+      const wins = stats?.wins ?? 0;
+      const pnl = stats?.pnl ?? 0;
+      const winRate = trades > 0 ? wins / trades : 0;
+
+      // Max drawdown for this strategy
+      let peak = 0;
+      let maxDD = 0;
+      const pnls = stats?.pnls ?? [];
+      let cumPnl = 0;
+      for (const p of pnls) {
+        cumPnl += p;
+        if (cumPnl > peak) peak = cumPnl;
+        const dd = peak - cumPnl;
+        if (dd > maxDD) maxDD = dd;
+      }
+
+      const wasEnabled = strategy.config.enabled;
+      const wasDisabledByCeo = this.disabledStrategies.has(strategy.name);
+      let shouldDisable = false;
+      let shouldReEnable = false;
+      let disabledReason: string | undefined;
+
+      // Decision logic — only judge strategies with enough trades
+      if (trades >= this.MIN_TRADES_TO_JUDGE) {
+        // Disable: negative P&L exceeding threshold
+        if (pnl < capital * this.DISABLE_PNL_THRESHOLD && !wasDisabledByCeo) {
+          shouldDisable = true;
+          disabledReason = `P&L $${pnl.toFixed(2)} exceeds ${(this.DISABLE_PNL_THRESHOLD * 100).toFixed(0)}% of capital`;
+        }
+
+        // Disable: win rate below 25% with enough trades
+        if (winRate < 0.25 && trades >= 10 && !wasDisabledByCeo) {
+          shouldDisable = true;
+          disabledReason = `Win rate ${(winRate * 100).toFixed(0)}% critically low (${wins}/${trades})`;
+        }
+
+        // Re-enable: was disabled but recent trades are profitable
+        if (wasDisabledByCeo && trades >= this.MIN_TRADES_TO_JUDGE) {
+          // Check last 5 trades
+          const recentPnls = pnls.slice(-5);
+          const recentPnl = recentPnls.reduce((a, b) => a + b, 0);
+          const recentWins = recentPnls.filter(p => p > 0).length;
+          if (recentPnl > 0 && recentWins >= 3) {
+            shouldReEnable = true;
+          }
+        }
+      }
+
+      // Apply decisions
+      if (shouldDisable && !wasDisabledByCeo) {
+        strategy.config.enabled = false;
+        this.disabledStrategies.add(strategy.name);
+        disabled.push(strategy.name);
+        log.warn({ strategy: strategy.name, pnl, winRate, trades, reason: disabledReason },
+          'CEO DISABLED underperforming strategy');
+      }
+
+      if (shouldReEnable && wasDisabledByCeo) {
+        strategy.config.enabled = true;
+        this.disabledStrategies.delete(strategy.name);
+        reEnabled.push(strategy.name);
+        disabledReason = undefined;
+        log.info({ strategy: strategy.name, pnl, winRate, trades },
+          'CEO RE-ENABLED recovered strategy');
+      }
+
+      perfList.push({
+        strategy: strategy.name,
+        totalTrades: trades,
+        wins,
+        losses: trades - wins,
+        winRate,
+        totalPnl: pnl,
+        avgPnl: trades > 0 ? pnl / trades : 0,
+        maxDrawdown: maxDD,
+        enabled: strategy.config.enabled,
+        disabledReason: wasDisabledByCeo && !shouldReEnable ? disabledReason ?? 'Previously disabled by CEO' : disabledReason,
+        lastReviewedAt: Date.now(),
+      });
+    }
+
+    // Sort by P&L — best first
+    perfList.sort((a, b) => b.totalPnl - a.totalPnl);
+
+    const overallPnl = closedPositions.reduce((s, p) => s + p.realizedPnl, 0);
+    const overallWins = closedPositions.filter(p => p.realizedPnl > 0).length;
+    const overallWinRate = closedPositions.length > 0 ? overallWins / closedPositions.length : 0;
+    const topPerformer = perfList.find(p => p.totalTrades >= this.MIN_TRADES_TO_JUDGE)?.strategy ?? null;
+    const worstPerformer = perfList.filter(p => p.totalTrades >= this.MIN_TRADES_TO_JUDGE).pop()?.strategy ?? null;
+
+    // Build recommendations
+    const recommendations: string[] = [];
+    if (overallPnl < 0) {
+      recommendations.push('System is unprofitable — tighten entry criteria and widen stops');
+    }
+    if (overallWinRate < 0.4) {
+      recommendations.push('Overall win rate below 40% — review signal quality filters');
+    }
+    const enabledCount = perfList.filter(p => p.enabled).length;
+    if (enabledCount < 3) {
+      recommendations.push(`Only ${enabledCount} strategies active — consider evolving new variants`);
+    }
+    if (disabled.length > 0) {
+      recommendations.push(`Disabled ${disabled.length} strategies this review: ${disabled.join(', ')}`);
+    }
+    if (reEnabled.length > 0) {
+      recommendations.push(`Re-enabled ${reEnabled.length} recovered strategies: ${reEnabled.join(', ')}`);
+    }
+    if (topPerformer) {
+      const topPerf = perfList.find(p => p.strategy === topPerformer)!;
+      if (topPerf.totalPnl > 0) {
+        recommendations.push(`Top performer: ${topPerformer} ($${topPerf.totalPnl.toFixed(2)}, ${(topPerf.winRate * 100).toFixed(0)}% WR) — consider increasing allocation`);
+      }
+    }
+
+    const review: ProfitabilityReview = {
+      overallPnl,
+      overallWinRate,
+      strategyPerformance: perfList,
+      disabled,
+      reEnabled,
+      topPerformer,
+      worstPerformer,
+      isProfitable: overallPnl > 0,
+      recommendations,
+    };
+
+    // Issue directives based on review
+    if (disabled.length > 0) {
+      void this.issueDirective('adjust-strategies', 'trading', {
+        action: 'disable',
+        strategies: disabled,
+      }, `CEO disabled unprofitable strategies: ${disabled.join(', ')}`, 'urgent');
+    }
+
+    log.info({
+      overallPnl: overallPnl.toFixed(2),
+      winRate: (overallWinRate * 100).toFixed(0) + '%',
+      enabled: enabledCount,
+      disabled: disabled.length,
+      reEnabled: reEnabled.length,
+      isProfitable: review.isProfitable,
+    }, 'CEO profitability review complete');
+
+    return review;
+  }
+
+  /**
+   * Format the profitability review for display.
+   */
+  static formatProfitabilityReview(review: ProfitabilityReview): string {
+    const lines: string[] = [
+      '\n=== CEO PROFITABILITY REVIEW ===\n',
+      `Overall: ${review.isProfitable ? 'PROFITABLE' : 'UNPROFITABLE'} | PnL: $${review.overallPnl.toFixed(2)} | Win Rate: ${(review.overallWinRate * 100).toFixed(1)}%`,
+      '',
+      'Strategy Rankings:',
+    ];
+
+    for (const p of review.strategyPerformance) {
+      const status = p.enabled ? '  ' : 'X ';
+      const pnlStr = p.totalPnl >= 0 ? `+$${p.totalPnl.toFixed(2)}` : `-$${Math.abs(p.totalPnl).toFixed(2)}`;
+      lines.push(
+        `  ${status}${p.strategy.padEnd(22)} | ${p.totalTrades.toString().padStart(3)} trades | ` +
+        `WR: ${(p.winRate * 100).toFixed(0).padStart(3)}% | PnL: ${pnlStr.padStart(10)} | ` +
+        `Avg: $${p.avgPnl.toFixed(2)} | DD: $${p.maxDrawdown.toFixed(2)}`,
+      );
+      if (p.disabledReason) {
+        lines.push(`       DISABLED: ${p.disabledReason}`);
+      }
+    }
+
+    if (review.recommendations.length > 0) {
+      lines.push('');
+      lines.push('CEO Recommendations:');
+      for (const rec of review.recommendations) {
+        lines.push(`  - ${rec}`);
+      }
+    }
+
+    return lines.join('\n');
+  }
+
+  /**
+   * Get the set of strategies the CEO has disabled.
+   */
+  getDisabledStrategies(): Set<string> {
+    return new Set(this.disabledStrategies);
+  }
+
+  // ----------------------------------------------------------------
   // Dashboard — CEO's view of the entire system
   // ----------------------------------------------------------------
 
@@ -573,6 +834,12 @@ export class CEOAgent {
       if (prompt) {
         lines.push(`    Mission: ${prompt.mission}`);
       }
+    }
+
+    // Disabled strategies
+    if (this.disabledStrategies.size > 0) {
+      lines.push('');
+      lines.push(`CEO Disabled Strategies: ${[...this.disabledStrategies].join(', ')}`);
     }
 
     // Quant module intelligence
