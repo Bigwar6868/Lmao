@@ -17,6 +17,7 @@
     "scan": "tsx src/scripts/scan.ts",
     "auto-trade": "tsx src/scripts/auto-trade.ts",
     "seed-data": "tsx src/scripts/seed-data.ts",
+    "covariance": "tsx src/scripts/oanda-covariance.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "bundle": "node scripts/bundle.mjs",
@@ -47,7 +48,8 @@
     "dotenv": "^16.4.0",
     "node-cron": "^3.0.3",
     "pino": "^9.6.0",
-    "trading-signals": "^7.4.3"
+    "trading-signals": "^7.4.3",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

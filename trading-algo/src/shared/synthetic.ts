@@ -247,6 +247,43 @@ function getDefaultPrice(symbol: string): number {
   if (s === 'TLT') return 92;
   if (s === 'HYG') return 77;
 
+  // Commodities
+  if (s.includes('WTICO')) return 78;
+  if (s.includes('BCO')) return 82;
+  if (s.includes('NATGAS')) return 2.8;
+  if (s.includes('SOYBN')) return 12.5;
+  if (s.includes('CORN')) return 4.8;
+  if (s.includes('WHEAT')) return 6.2;
+  if (s.includes('SUGAR')) return 0.22;
+
+  // Indices
+  if (s.includes('SPX500')) return 5200;
+  if (s.includes('NAS100')) return 18200;
+  if (s.includes('US30')) return 39500;
+  if (s.includes('US2000')) return 2050;
+  if (s.includes('UK100')) return 8100;
+  if (s.includes('DE30')) return 18400;
+  if (s.includes('FR40')) return 8000;
+  if (s.includes('EU50')) return 5000;
+  if (s.includes('NL25')) return 880;
+  if (s.includes('ES35')) return 11200;
+  if (s.includes('JP225')) return 39800;
+  if (s.includes('AU200')) return 7800;
+  if (s.includes('HK33')) return 17500;
+  if (s.includes('SG30')) return 3300;
+  if (s.includes('CN50')) return 12500;
+  if (s.includes('IN50')) return 22000;
+  if (s.includes('TWIX')) return 20000;
+
+  // Bonds (price-based, not yield)
+  if (s.includes('USB02Y')) return 104;
+  if (s.includes('USB05Y')) return 107;
+  if (s.includes('USB10Y')) return 112;
+  if (s.includes('USB30Y')) return 120;
+  if (s.includes('DE10YB')) return 131;
+  if (s.includes('UK10YB')) return 98;
+  if (s.includes('JP10YB')) return 145;
+
   // Forex
   if (s.includes('EUR') && s.includes('USD')) return 1.085;
   if (s.includes('GBP') && s.includes('USD')) return 1.27;
@@ -271,6 +308,15 @@ function getDefaultVolatility(symbol: string): number {
   if (s.includes('SHIB') || s.includes('PEPE') || s.includes('WIF') || s.includes('BONK') || s.includes('FLOKI') || s.includes('DOGE')) return 0.05;
   // Crypto: moderate-high
   if (s.includes('/USDT') || s.includes('/BTC')) return 0.025;
+  // Bonds: very low volatility
+  if (s.includes('USB') || s.includes('10YB') || s.includes('JP10Y')) return 0.003;
+  // Indices: moderate
+  if (s.includes('SPX500') || s.includes('NAS100') || s.includes('US30') || s.includes('US2000')) return 0.012;
+  if (s.includes('UK100') || s.includes('DE30') || s.includes('FR40') || s.includes('EU50') || s.includes('NL25') || s.includes('ES35')) return 0.012;
+  if (s.includes('JP225') || s.includes('AU200') || s.includes('HK33') || s.includes('SG30') || s.includes('CN50') || s.includes('IN50') || s.includes('TWIX')) return 0.015;
+  // Commodities: energy high, agricultural moderate
+  if (s.includes('WTICO') || s.includes('BCO') || s.includes('NATGAS')) return 0.02;
+  if (s.includes('SOYBN') || s.includes('CORN') || s.includes('WHEAT') || s.includes('SUGAR')) return 0.015;
   // Forex emerging: higher
   if (s.includes('TRY') || s.includes('ZAR') || s.includes('MXN')) return 0.008;
   // Forex: low
