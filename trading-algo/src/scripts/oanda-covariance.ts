@@ -1,14 +1,17 @@
 #!/usr/bin/env tsx
 /**
- * OANDA Covariance Matrix Generator (5-second granularity)
+ * OANDA Covariance Matrix Generator (M5 — 5-minute granularity)
  *
- * Fetches S5 (5-second) candle data for ALL OANDA-tradeable assets:
+ * Fetches M5 (5-minute) candle data for ALL OANDA-tradeable assets:
  * forex pairs, metals, commodities, indices, bonds.
  *
- * Computes covariance & correlation matrices for 1M, 3M, 6M, 12M windows
- * using daily returns aggregated from high-frequency data.
+ * Paginates backward to cover the full 12-month window (~72,576 M5 bars
+ * per asset at 288 bars/day × 252 trading days).
  *
- * Outputs a single Excel workbook with sheets per window + summary.
+ * Computes covariance & correlation matrices for 1M, 3M, 6M, 12M windows
+ * using 5-minute log returns (annualised with √(252 × 288) scaling).
+ *
+ * Outputs an Excel workbook with sheets per window + summary.
  *
  * Usage:
  *   npx tsx src/scripts/oanda-covariance.ts
@@ -28,15 +31,30 @@ import type { AssetInfo, Candle } from '../shared/types.js';
 // Config
 // ============================================================
 
-/** Windows defined as trading days for daily-return covariance */
+/**
+ * Windows defined in M5 bars (5-min candles).
+ * Forex trades ~24h/day, 5 days/week → 288 M5 bars/day.
+ *   1M  = 22 trading days  ×  288 =   6,336
+ *   3M  = 66 trading days  ×  288 =  19,008
+ *   6M  = 132 trading days ×  288 =  38,016
+ *   12M = 252 trading days ×  288 =  72,576
+ */
+const M5_BARS_PER_DAY = 288;
+
 const WINDOWS = {
-  '1M': 22,
-  '3M': 66,
-  '6M': 132,
-  '12M': 252,
+  '1M':  22  * M5_BARS_PER_DAY,   //   6,336
+  '3M':  66  * M5_BARS_PER_DAY,   //  19,008
+  '6M':  132 * M5_BARS_PER_DAY,   //  38,016
+  '12M': 252 * M5_BARS_PER_DAY,   //  72,576
 } as const;
 
 type WindowKey = keyof typeof WINDOWS;
+
+/**
+ * Annualisation factor for M5 returns.
+ * There are 252 × 288 = 72,576 M5 bars per year.
+ */
+const ANNUAL_FACTOR = 252 * M5_BARS_PER_DAY; // 72,576
 
 const PRACTICE_URL = 'https://api-fxpractice.oanda.com';
 const LIVE_URL = 'https://api-fxtrade.oanda.com';
@@ -45,10 +63,10 @@ const LIVE_URL = 'https://api-fxtrade.oanda.com';
 const OANDA_MAX_COUNT = 5000;
 
 /** Rate-limit pause between OANDA requests (ms) */
-const RATE_LIMIT_MS = 150;
+const RATE_LIMIT_MS = 120;
 
-/** How many S5 candles to fetch per asset (5000 per page, paginate back) */
-const TARGET_S5_CANDLES = 50_000; // ~70 hours of 5s data per page fetch
+/** Target: fetch enough M5 candles to cover 12 months */
+const TARGET_M5_CANDLES = 75_000; // 72,576 + buffer
 
 // ============================================================
 // Helpers
@@ -78,36 +96,11 @@ function mean(arr: number[]): number {
   return arr.reduce((a, b) => a + b, 0) / arr.length;
 }
 
-/**
- * Aggregate 5-second candles into daily OHLCV bars.
- * Groups by UTC date.
- */
-function aggregateToDaily(s5Candles: Candle[]): Candle[] {
-  if (s5Candles.length === 0) return [];
-
-  const dayMap = new Map<string, Candle>();
-
-  for (const c of s5Candles) {
-    const dateKey = new Date(c.timestamp).toISOString().slice(0, 10);
-    const existing = dayMap.get(dateKey);
-    if (!existing) {
-      dayMap.set(dateKey, { ...c });
-    } else {
-      existing.high = Math.max(existing.high, c.high);
-      existing.low = Math.min(existing.low, c.low);
-      existing.close = c.close; // last close of the day
-      existing.volume += c.volume;
-    }
-  }
-
-  return [...dayMap.values()].sort((a, b) => a.timestamp - b.timestamp);
-}
-
 // ============================================================
-// OANDA S5 Data Fetcher (paginated)
+// OANDA M5 Data Fetcher (paginated backward)
 // ============================================================
 
-class OandaS5Fetcher {
+class OandaM5Fetcher {
   private client: AxiosInstance;
   private accountId: string;
 
@@ -132,22 +125,26 @@ class OandaS5Fetcher {
   }
 
   /**
-   * Fetch S5 candles with backward pagination to get maximum data.
-   * OANDA returns max 5000 candles per request. We paginate using `to` param.
+   * Fetch M5 candles with backward pagination.
+   * OANDA returns max 5000 candles per request. We use the `to` param
+   * to page backward from now, collecting up to targetCount candles.
+   *
+   * For 12M coverage: ~75,000 candles = 15 pages of 5000.
    */
-  async fetchS5(
+  async fetchM5(
     symbol: string,
-    targetCount: number = TARGET_S5_CANDLES,
+    targetCount: number = TARGET_M5_CANDLES,
   ): Promise<Candle[]> {
     const instrument = toInstrument(symbol);
     const allCandles: Candle[] = [];
-    let toTime: string | undefined = undefined; // start from now, go backwards
+    let toTime: string | undefined = undefined;
     let remaining = targetCount;
+    let pages = 0;
 
     while (remaining > 0) {
       const count = Math.min(remaining, OANDA_MAX_COUNT);
       const params: Record<string, string | number> = {
-        granularity: 'S5',
+        granularity: 'M5',
         count,
         price: 'M',
       };
@@ -179,27 +176,25 @@ class OandaS5Fetcher {
 
         // Move `to` to the earliest candle for backward pagination
         const earliestTime = candles[0]?.time;
-        if (!earliestTime || candles.length < count) break; // no more data
+        if (!earliestTime || candles.length < count) break;
         toTime = earliestTime;
         remaining -= candles.length;
+        pages++;
 
         await sleep(RATE_LIMIT_MS);
       } catch (err: any) {
         const status = err?.response?.status;
         if (status === 429) {
-          // Rate limited — back off and retry
           await sleep(2000);
           continue;
         }
-        // Other error — stop pagination for this instrument
         break;
       }
     }
 
-    // Sort chronologically
+    // Sort chronologically & deduplicate
     allCandles.sort((a, b) => a.timestamp - b.timestamp);
 
-    // Deduplicate by timestamp
     const seen = new Set<number>();
     const deduped: Candle[] = [];
     for (const c of allCandles) {
@@ -211,43 +206,6 @@ class OandaS5Fetcher {
 
     return deduped;
   }
-
-  /**
-   * Also fetch daily candles directly (D granularity) for maximum coverage.
-   * OANDA allows up to 5000 daily candles (~20 years).
-   */
-  async fetchDaily(symbol: string): Promise<Candle[]> {
-    const instrument = toInstrument(symbol);
-    try {
-      const resp = await this.client.get(
-        `/v3/instruments/${instrument}/candles`,
-        {
-          params: {
-            granularity: 'D',
-            count: 5000,
-            price: 'M',
-          },
-        },
-      );
-
-      const candles: Candle[] = [];
-      for (const bar of resp.data.candles ?? []) {
-        if (!bar.complete) continue;
-        const mid = bar.mid ?? {};
-        candles.push({
-          timestamp: new Date(bar.time).getTime(),
-          open: parseFloat(mid.o ?? '0'),
-          high: parseFloat(mid.h ?? '0'),
-          low: parseFloat(mid.l ?? '0'),
-          close: parseFloat(mid.c ?? '0'),
-          volume: parseInt(bar.volume ?? '0', 10),
-        });
-      }
-      return candles;
-    } catch {
-      return [];
-    }
-  }
 }
 
 // ============================================================
@@ -256,53 +214,45 @@ class OandaS5Fetcher {
 
 interface AssetData {
   asset: AssetInfo;
-  s5Candles: Candle[];
-  dailyCandles: Candle[];
-  dailyReturns: number[];
+  candles: Candle[];
+  returns: number[];
 }
 
-async function fetchAllAssets(fetcher: OandaS5Fetcher): Promise<AssetData[]> {
+async function fetchAllAssets(fetcher: OandaM5Fetcher): Promise<AssetData[]> {
   const results: AssetData[] = [];
   const total = oandaAssets.length;
   const useLive = fetcher.isConfigured && !config.cloudMode;
 
-  console.log(`\n  Fetching data for ${total} OANDA assets...`);
-  console.log(`  Mode: ${useLive ? 'OANDA API (S5 + Daily)' : 'Synthetic data (cloud/no API key)'}\n`);
+  console.log(`\n  Fetching M5 data for ${total} OANDA assets...`);
+  console.log(`  Mode: ${useLive ? 'OANDA API (M5, paginated 12M)' : 'Synthetic data (cloud/no API key)'}`);
+  console.log(`  Target: ${TARGET_M5_CANDLES.toLocaleString()} candles/asset (~${Math.ceil(TARGET_M5_CANDLES / OANDA_MAX_COUNT)} pages)\n`);
 
   for (let i = 0; i < total; i++) {
     const asset = oandaAssets[i];
     const pct = ((i + 1) / total * 100).toFixed(0);
     process.stdout.write(`\r  [${pct.padStart(3)}%] ${asset.symbol.padEnd(18)} (${i + 1}/${total})`);
 
-    let s5Candles: Candle[] = [];
-    let dailyCandles: Candle[];
+    let candles: Candle[];
 
     if (useLive) {
       try {
-        // Fetch daily candles (up to 5000 days = ~20 years)
-        dailyCandles = await fetcher.fetchDaily(asset.symbol);
-        await sleep(RATE_LIMIT_MS);
-
-        // Also fetch S5 data for high-frequency analysis
-        s5Candles = await fetcher.fetchS5(asset.symbol, TARGET_S5_CANDLES);
-
-        if (dailyCandles.length < 20) {
-          // Fallback: aggregate S5 to daily
-          dailyCandles = aggregateToDaily(s5Candles);
-        }
-
-        if (dailyCandles.length < 20) throw new Error('insufficient');
+        candles = await fetcher.fetchM5(asset.symbol, TARGET_M5_CANDLES);
+        if (candles.length < 1000) throw new Error('insufficient M5 data');
       } catch {
-        dailyCandles = generateSyntheticCandles(asset.symbol, 300, { intervalMs: 86_400_000 });
+        // Fallback to synthetic M5 data
+        candles = generateSyntheticCandles(asset.symbol, TARGET_M5_CANDLES, {
+          intervalMs: 5 * 60 * 1000, // 5 minutes
+        });
       }
     } else {
-      // Synthetic: generate daily data for covariance + S5-like data
-      dailyCandles = generateSyntheticCandles(asset.symbol, 300, { intervalMs: 86_400_000 });
-      s5Candles = generateSyntheticCandles(asset.symbol, 5000, { intervalMs: 5_000 });
+      // Synthetic M5 data covering 12 months
+      candles = generateSyntheticCandles(asset.symbol, TARGET_M5_CANDLES, {
+        intervalMs: 5 * 60 * 1000,
+      });
     }
 
-    const dailyReturns = logReturns(dailyCandles);
-    results.push({ asset, s5Candles, dailyCandles, dailyReturns });
+    const returns = logReturns(candles);
+    results.push({ asset, candles, returns });
   }
 
   console.log('\n');
@@ -310,7 +260,7 @@ async function fetchAllAssets(fetcher: OandaS5Fetcher): Promise<AssetData[]> {
 }
 
 // ============================================================
-// Covariance / Correlation
+// Covariance / Correlation (on M5 returns)
 // ============================================================
 
 interface MatrixResult {
@@ -319,24 +269,31 @@ interface MatrixResult {
   correlation: number[][];
   volatilities: Map<string, number>;
   observations: number;
+  windowLabel: string;
 }
 
-function computeMatrix(data: AssetData[], windowDays: number): MatrixResult {
+/**
+ * Compute covariance matrix from M5 return series.
+ * windowBars = number of M5 bars in the lookback window.
+ * Annualisation: multiply sample covariance by ANNUAL_FACTOR (72,576).
+ */
+function computeMatrix(data: AssetData[], windowBars: number, windowLabel: string): MatrixResult {
   const N = data.length;
   const symbols = data.map(d => d.asset.symbol);
 
-  // Trim daily returns to window (most recent)
+  // Trim M5 returns to window size (most recent bars)
   const trimmed = data.map(d => {
-    const r = d.dailyReturns;
-    return r.length >= windowDays ? r.slice(r.length - windowDays) : r;
+    const r = d.returns;
+    return r.length >= windowBars ? r.slice(r.length - windowBars) : r;
   });
 
+  // Align to shortest
   const minLen = Math.min(...trimmed.map(r => r.length));
   const aligned = trimmed.map(r => r.slice(r.length - minLen));
   const T = minLen;
   const means = aligned.map(r => mean(r));
 
-  // Covariance (annualised × 252)
+  // Sample covariance × annualisation factor
   const cov: number[][] = Array.from({ length: N }, () => new Array(N).fill(0));
   for (let i = 0; i < N; i++) {
     for (let j = i; j < N; j++) {
@@ -344,17 +301,19 @@ function computeMatrix(data: AssetData[], windowDays: number): MatrixResult {
       for (let t = 0; t < T; t++) {
         sum += (aligned[i][t] - means[i]) * (aligned[j][t] - means[j]);
       }
-      const c = (sum / Math.max(T - 1, 1)) * 252;
+      const c = (sum / Math.max(T - 1, 1)) * ANNUAL_FACTOR;
       cov[i][j] = c;
       cov[j][i] = c;
     }
   }
 
+  // Volatilities
   const vols = new Map<string, number>();
   for (let i = 0; i < N; i++) {
     vols.set(symbols[i], Math.sqrt(Math.max(cov[i][i], 0)));
   }
 
+  // Correlation
   const corr: number[][] = Array.from({ length: N }, () => new Array(N).fill(0));
   for (let i = 0; i < N; i++) {
     for (let j = 0; j < N; j++) {
@@ -366,7 +325,7 @@ function computeMatrix(data: AssetData[], windowDays: number): MatrixResult {
     }
   }
 
-  return { symbols, covariance: cov, correlation: corr, volatilities: vols, observations: T };
+  return { symbols, covariance: cov, correlation: corr, volatilities: vols, observations: T, windowLabel };
 }
 
 // ============================================================
@@ -386,13 +345,26 @@ function matrixToSheet(symbols: string[], matrix: number[][], decimals: number):
   return XLSX.utils.aoa_to_sheet(rows);
 }
 
-function buildSummarySheet(results: Map<WindowKey, MatrixResult>): XLSX.WorkSheet {
+function buildSummarySheet(results: Map<WindowKey, MatrixResult>, data: AssetData[]): XLSX.WorkSheet {
   const rows: (string | number)[][] = [];
-  rows.push(['OANDA Covariance Matrix Report — 5-Second Granularity']);
+  rows.push(['OANDA Covariance Matrix Report — M5 (5-Minute) Granularity']);
   rows.push([`Generated: ${new Date().toISOString()}`]);
+  rows.push([`Annualisation factor: ${ANNUAL_FACTOR} (252 days x ${M5_BARS_PER_DAY} bars/day)`]);
   rows.push([]);
 
-  // Volatility table
+  // Data coverage
+  rows.push(['=== Data Coverage ===']);
+  rows.push(['Symbol', 'Asset Class', 'M5 Candles', 'Time Span (days)', 'First Candle', 'Last Candle']);
+  for (const d of data) {
+    const span = d.candles.length > 1
+      ? ((d.candles[d.candles.length - 1].timestamp - d.candles[0].timestamp) / 86_400_000).toFixed(0)
+      : '0';
+    const first = d.candles.length > 0 ? new Date(d.candles[0].timestamp).toISOString().slice(0, 10) : '';
+    const last = d.candles.length > 0 ? new Date(d.candles[d.candles.length - 1].timestamp).toISOString().slice(0, 10) : '';
+    rows.push([d.asset.symbol, d.asset.assetClass, d.candles.length, Number(span), first, last]);
+  }
+
+  rows.push([]);
   rows.push(['=== Annualised Volatility by Window ===']);
   const firstResult = results.values().next().value!;
   const symbols = firstResult.symbols;
@@ -428,7 +400,7 @@ function buildSummarySheet(results: Map<WindowKey, MatrixResult>): XLSX.WorkShee
     rows.push([p.a, assetA?.assetClass ?? '', p.b, assetB?.assetClass ?? '', Number(p.c.toFixed(4))]);
   }
 
-  // Most negatively correlated
+  // Negative correlations
   rows.push([]);
   rows.push(['=== Top 25 Most Negatively Correlated Pairs (12M) ===']);
   rows.push(['Asset A', 'Class A', 'Asset B', 'Class B', 'Correlation']);
@@ -453,36 +425,12 @@ function buildSummarySheet(results: Map<WindowKey, MatrixResult>): XLSX.WorkShee
   }
   rows.push(['Total', symbols.length]);
 
-  // Data quality
+  // Observations per window
   rows.push([]);
   rows.push(['=== Observations per Window ===']);
   for (const [window, result] of results) {
-    rows.push([window, `${result.observations} daily returns`]);
-  }
-
-  return XLSX.utils.aoa_to_sheet(rows);
-}
-
-function buildS5StatsSheet(data: AssetData[]): XLSX.WorkSheet {
-  const rows: (string | number)[][] = [];
-  rows.push(['=== 5-Second Data Summary ===']);
-  rows.push(['Symbol', 'Asset Class', 'S5 Candles', 'Daily Candles', 'S5 Time Span (hours)', 'Daily Time Span (days)']);
-
-  for (const d of data) {
-    const s5Hours = d.s5Candles.length > 1
-      ? ((d.s5Candles[d.s5Candles.length - 1].timestamp - d.s5Candles[0].timestamp) / 3_600_000).toFixed(1)
-      : '0';
-    const dailyDays = d.dailyCandles.length > 1
-      ? ((d.dailyCandles[d.dailyCandles.length - 1].timestamp - d.dailyCandles[0].timestamp) / 86_400_000).toFixed(0)
-      : '0';
-    rows.push([
-      d.asset.symbol,
-      d.asset.assetClass,
-      d.s5Candles.length,
-      d.dailyCandles.length,
-      Number(s5Hours),
-      Number(dailyDays),
-    ]);
+    const tradingDays = Math.round(result.observations / M5_BARS_PER_DAY);
+    rows.push([window, `${result.observations.toLocaleString()} M5 returns (~${tradingDays} trading days)`]);
   }
 
   return XLSX.utils.aoa_to_sheet(rows);
@@ -492,10 +440,7 @@ function exportToExcel(results: Map<WindowKey, MatrixResult>, data: AssetData[],
   const wb = XLSX.utils.book_new();
 
   // Summary
-  XLSX.utils.book_append_sheet(wb, buildSummarySheet(results), 'Summary');
-
-  // S5 data stats
-  XLSX.utils.book_append_sheet(wb, buildS5StatsSheet(data), 'S5 Data Stats');
+  XLSX.utils.book_append_sheet(wb, buildSummarySheet(results, data), 'Summary');
 
   // Covariance sheets
   for (const [window, result] of results) {
@@ -516,30 +461,30 @@ function exportToExcel(results: Map<WindowKey, MatrixResult>, data: AssetData[],
 
 async function main(): Promise<void> {
   console.log('================================================================');
-  console.log('  OANDA Covariance Matrix Generator (S5 granularity)');
+  console.log('  OANDA Covariance Matrix Generator (M5 — 5-Minute)');
   console.log('================================================================');
 
-  const fetcher = new OandaS5Fetcher();
+  const fetcher = new OandaM5Fetcher();
   const data = await fetchAllAssets(fetcher);
 
-  const totalS5 = data.reduce((sum, d) => sum + d.s5Candles.length, 0);
-  const totalDaily = data.reduce((sum, d) => sum + d.dailyCandles.length, 0);
-  console.log(`  Fetched ${data.length} assets | ${totalS5.toLocaleString()} S5 candles | ${totalDaily.toLocaleString()} daily candles\n`);
+  const totalCandles = data.reduce((sum, d) => sum + d.candles.length, 0);
+  console.log(`  Fetched ${data.length} assets | ${totalCandles.toLocaleString()} M5 candles total\n`);
 
-  // Compute matrices
+  // Compute matrices for each window
   const results = new Map<WindowKey, MatrixResult>();
-  for (const [window, days] of Object.entries(WINDOWS) as [WindowKey, number][]) {
-    console.log(`  Computing ${window} covariance matrix (${days} trading days)...`);
-    const result = computeMatrix(data, days);
+  for (const [window, bars] of Object.entries(WINDOWS) as [WindowKey, number][]) {
+    const days = Math.round(bars / M5_BARS_PER_DAY);
+    console.log(`  Computing ${window} covariance (${bars.toLocaleString()} M5 bars = ${days} trading days)...`);
+    const result = computeMatrix(data, bars, window);
     results.set(window, result);
-    console.log(`    ${result.symbols.length} assets x ${result.observations} observations`);
+    console.log(`    ${result.symbols.length} assets x ${result.observations.toLocaleString()} observations`);
   }
 
   // Export
   const outputDir = join(config.dataDir, 'reports');
   mkdirSync(outputDir, { recursive: true });
   const ts = new Date().toISOString().slice(0, 10);
-  const outputPath = join(outputDir, `oanda-covariance-${ts}.xlsx`);
+  const outputPath = join(outputDir, `oanda-covariance-m5-${ts}.xlsx`);
 
   console.log(`\n  Writing Excel: ${outputPath}`);
   exportToExcel(results, data, outputPath);
@@ -547,7 +492,7 @@ async function main(): Promise<void> {
 
   // Console summary
   const r12 = results.get('12M')!;
-  console.log('--- 12M Annualised Volatility (Top 20) ---');
+  console.log(`--- 12M Annualised Volatility (Top 20) [${r12.observations.toLocaleString()} M5 obs] ---`);
   const volEntries = [...r12.volatilities.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20);
   for (const [sym, vol] of volEntries) {
     console.log(`  ${sym.padEnd(18)} ${(vol * 100).toFixed(2)}%`);
